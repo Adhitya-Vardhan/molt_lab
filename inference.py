@@ -26,9 +26,9 @@ API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME")
 HF_TOKEN = os.getenv("HF_TOKEN")
 MAX_TURNS = 10
-MODEL_TIMEOUT_S = float(os.getenv("MODEL_TIMEOUT_S", "90"))
-MODEL_LONG_TIMEOUT_S = float(os.getenv("MODEL_LONG_TIMEOUT_S", "150"))
-MODEL_RETRY_TIMEOUT_S = float(os.getenv("MODEL_RETRY_TIMEOUT_S", "35"))
+MODEL_TIMEOUT_S = float(os.getenv("MODEL_TIMEOUT_S", "35"))
+MODEL_LONG_TIMEOUT_S = float(os.getenv("MODEL_LONG_TIMEOUT_S", "45"))
+MODEL_RETRY_TIMEOUT_S = float(os.getenv("MODEL_RETRY_TIMEOUT_S", "15"))
 MODEL_MAX_TOKENS = int(os.getenv("MODEL_MAX_TOKENS", "220"))
 
 
@@ -39,6 +39,8 @@ def main() -> None:
     client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
 
     scores = []
+    submission_scores = []
+    progress_scores = []
     model_action_count = 0
     for episode_index in range(3):
         observation = env.reset()
@@ -60,17 +62,28 @@ def main() -> None:
                 break
 
         grader_scores = observation.metadata.get("terminal_grader_scores", {})
+        final_score = float(grader_scores.get("final_score", grader_scores.get("submission_score", 0.0)))
         submission_score = float(grader_scores.get("submission_score", 0.0))
-        scores.append(submission_score)
+        progress_score = float(grader_scores.get("progress_score", 0.0))
+        scores.append(final_score)
+        submission_scores.append(submission_score)
+        progress_scores.append(progress_score)
+        print(f"final_score={final_score:.3f}")
         print(f"submission_score={submission_score:.3f}")
+        print(f"progress_score={progress_score:.3f}")
         if observation.report_card:
             print(observation.report_card)
 
     average = sum(scores) / len(scores)
+    average_progress = sum(progress_scores) / len(progress_scores)
     print("\n=== Baseline Summary ===")
     summary = {
         "scores": scores,
-        "average_submission_score": round(average, 4),
+        "average_final_score": round(average, 4),
+        "submission_scores": submission_scores,
+        "average_submission_score": round(sum(submission_scores) / len(submission_scores), 4),
+        "progress_scores": progress_scores,
+        "average_progress_score": round(average_progress, 4),
         "model_action_count": model_action_count,
         "model_name": MODEL_NAME,
         "api_base_url": API_BASE_URL,

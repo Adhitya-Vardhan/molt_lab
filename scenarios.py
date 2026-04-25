@@ -203,16 +203,17 @@ SCENARIOS: List[ScenarioConfig] = [
         difficulty="easy",
         target_name="KRAS G12C",
         task_brief=(
-            "Improve target potency while keeping safety and synthesis evidence current. The "
-            "starting scaffold is close, but a strong submission still needs assay support."
+            "Improve target potency while repairing a mild safety liability and keeping synthesis "
+            "evidence current. The starting scaffold is close, but a strong submission still needs "
+            "the right edit sequence plus assay support."
         ),
-        oracle_budget=4300,
-        max_steps=6,
+        oracle_budget=3600,
+        max_steps=7,
         starting_scaffold={
             "warhead": "acrylamide",
             "hinge": "pyridine",
             "solvent_tail": "cyclopropyl",
-            "back_pocket": "methoxy",
+            "back_pocket": "chloro",
         },
         restart_scaffold={
             "warhead": "reversible_cyanoacrylamide",
@@ -226,7 +227,7 @@ SCENARIOS: List[ScenarioConfig] = [
             "synth": 0.15,
             "novelty": 0.15,
         },
-        hard_constraints={"potency_min": 0.82, "toxicity_max": 0.32, "synth_min": 0.62},
+        hard_constraints={"potency_min": 0.84, "toxicity_max": 0.28, "synth_min": 0.62},
         enabled_tools=list(DEFAULT_TOOL_COSTS.keys()),
         enabled_actions=["edit", "run_assay", "submit", "defer", "restart"],
         enabled_roles=[
@@ -236,7 +237,7 @@ SCENARIOS: List[ScenarioConfig] = [
             "process_chemist",
         ],
         required_review_roles=["toxicologist", "assay_planner", "process_chemist"],
-        baseline_to_beat=0.68,
+        baseline_to_beat=0.70,
     ),
     ScenarioConfig(
         scenario_id="level_1_medium",

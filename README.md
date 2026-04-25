@@ -1,3 +1,12 @@
+---
+title: MolForge
+emoji: 🧪
+colorFrom: green
+colorTo: indigo
+sdk: docker
+app_port: 8000
+---
+
 # MolForge
 
 MolForge is an OpenEnv environment for medicinal chemistry lead optimization. A specialist team iteratively edits a KRAS G12C candidate under limited assay budget, partial observability, and strict safety constraints. The environment uses RDKit-backed molecular descriptors and TDC molecule oracles when available, blended with target-specific KRAS surrogate logic so it stays lightweight enough for the OpenEnv hackathon validator while still modeling a real scientific workflow.
@@ -19,6 +28,7 @@ MolForge rotates through three built-in tasks on successive `reset()` calls:
 
 Each task has a deterministic grader that outputs scores in the `0.0` to `1.0` range:
 
+- `final_score`
 - `potency_score`
 - `safety_score`
 - `synth_score`
@@ -114,7 +124,7 @@ The reward function mixes coarse shaping and sparse terminal bonuses:
 - Large terminal reward for submitting a molecule that beats baseline while satisfying hard constraints and evidence requirements
 - Small budget-efficiency credit for valid evidence-backed submissions, so finishing with unused budget is better than reaching the same candidate wastefully
 
-`candidate_score` is always reported so a run can show that the agent found a chemically good molecule even if it failed to formally submit. `submission_score` remains a formal task-completion score and is `0.0` without a `submit` action.
+`final_score` is the single headline scalar for RL/evaluation. It equals strict `submission_score` after a valid formal submission, and gives only small capped partial credit to non-submitted episodes. `candidate_score` and `progress_score` are diagnostic breakdowns only. `progress_score` is deliberately capped by failed constraints, repeated assays, policy-veto loops, and hard-scenario trap failures, so evidence collection alone cannot look like success. `submission_score` remains a formal task-completion score and is `0.0` without a `submit` action.
 
 For early RL, `MOLFORGE_REWARD_MODE=curriculum` adds bounded warmup reward for useful evidence collection, evidence-supported submit decisions, and non-submitted near-miss episodes. It also adds a small missed-nomination penalty when a strong evidence package is ready but the agent lets the deadline pass without submitting. This makes reward curves less sparse for small models, while leaving the official terminal `submission_score` unchanged. Final judge-facing evaluation should still report strict `submission_score` in the default `assay_gated` mode.
 
@@ -228,11 +238,11 @@ python local_inference.py
 
 Reference offline smoke-test baseline from the deterministic trace policy used only for SFT data generation. This is not a model score and should not be reported as frontier-model performance:
 
-- `level_0_easy`: `0.8356`
-- `level_1_medium`: `0.8314`
-- `level_2_hard`: `0.8519`
-- Average submission score: `0.8396`
+- `level_0_easy`: `0.8703`
+- `level_1_medium`: `0.8733`
+- `level_2_hard`: `0.8883`
+- Average final/submission score: `0.8773`
 
 ## Deployment
 
-The environment is packaged as a FastAPI OpenEnv Space using the repo-root [Dockerfile](Dockerfile) for validator compatibility, with [server/Dockerfile](server/Dockerfile) retained for OpenEnv-style server packaging. The root manifest is [openenv.yaml](openenv.yaml), so `openenv push` can deploy it to Hugging Face Spaces.
+The environment is packaged as a FastAPI OpenEnv Space using the repo-root [Dockerfile](Dockerfile) for validator compatibility, with [server/Dockerfile](server/Dockerfile) retained for OpenEnv-style server packaging. The root manifest is [openenv.yaml](openenv.yaml), so `openenv push` or a Docker Hugging Face Space can deploy it.

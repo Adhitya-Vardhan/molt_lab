@@ -41,6 +41,8 @@ OLLAMA_THINK = os.getenv("OLLAMA_THINK", "false").lower() == "true"
 def main() -> None:
     env = MolForgeEnvironment()
     scores = []
+    submission_scores = []
+    progress_scores = []
 
     print(f"Using Ollama model: {LOCAL_MODEL_NAME}", flush=True)
     print(f"Ollama base URL: {OLLAMA_BASE_URL}", flush=True)
@@ -66,20 +68,31 @@ def main() -> None:
                 break
 
         grader_scores = observation.metadata.get("terminal_grader_scores", {})
+        final_score = float(grader_scores.get("final_score", grader_scores.get("submission_score", 0.0)))
         submission_score = float(grader_scores.get("submission_score", 0.0))
-        scores.append(submission_score)
+        progress_score = float(grader_scores.get("progress_score", 0.0))
+        scores.append(final_score)
+        submission_scores.append(submission_score)
+        progress_scores.append(progress_score)
+        print(f"final_score={final_score:.3f}", flush=True)
         print(f"submission_score={submission_score:.3f}", flush=True)
+        print(f"progress_score={progress_score:.3f}", flush=True)
         if observation.report_card:
             print(observation.report_card, flush=True)
 
     average = sum(scores) / len(scores)
+    average_progress = sum(progress_scores) / len(progress_scores)
     print("\n=== Local Baseline Summary ===", flush=True)
     print(
         json.dumps(
             {
                 "model": LOCAL_MODEL_NAME,
                 "scores": scores,
-                "average_submission_score": round(average, 4),
+                "average_final_score": round(average, 4),
+                "submission_scores": submission_scores,
+                "average_submission_score": round(sum(submission_scores) / len(submission_scores), 4),
+                "progress_scores": progress_scores,
+                "average_progress_score": round(average_progress, 4),
             },
             indent=2,
         ),

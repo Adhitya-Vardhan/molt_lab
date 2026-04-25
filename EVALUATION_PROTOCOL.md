@@ -38,8 +38,11 @@ export MOLFORGE_REWARD_MODE=assay_gated
 Report:
 
 - `average_submission_score`;
+- `average_final_score`;
+- per-task `final_score`;
 - per-task `submission_score`;
 - `candidate_score`;
+- `progress_score`;
 - `constraint_margin_score`;
 - `evidence_score`;
 - `coordination_score`;
@@ -51,6 +54,12 @@ Report:
 The official score should not be minimum number of steps. Real drug discovery
 does not reward the fastest project if it skips necessary evidence. Instead,
 MolForge rewards finishing within the available budget and decision horizon.
+`final_score` is the single scalar to optimize and headline. It equals
+`submission_score` for submitted episodes and gives only small capped partial
+credit to non-submitted episodes. `progress_score` is useful for debugging but
+is not a substitute for `final_score` or `submission_score`: it is capped when
+constraints fail, when the hard trap scenario is not restarted, or when the
+model loops through repeated assays and vetoes.
 
 ## Budget And Step Interpretation
 
@@ -84,12 +93,11 @@ Step effects:
 
 For the README/demo, compare:
 
-| Model | Reward mode | Submit rate | Avg submission_score | Avg evidence_score | Avg budget_score | Veto rate |
+| Model | Reward mode | Submit rate | Avg final_score | Avg submission_score | Avg evidence_score | Avg budget_score | Veto rate |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Base model | assay_gated | low | low | low/medium | variable | high |
-| SFT v4 | assay_gated | better | better | better | variable | lower |
-| SFT v4 + RL | assay_gated | best | best | high | healthy | low |
+| Base model | assay_gated | low | low | low | low/medium | variable | high |
+| SFT v4 | assay_gated | better | better | better | better | variable | lower |
+| SFT v4 + RL | assay_gated | best | best | best | high | healthy | low |
 
 For training plots, show curriculum reward increasing, but always pair it with
 strict `submission_score` before/after so the improvement is credible.
-

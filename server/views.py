@@ -239,8 +239,31 @@ class MolForgeViewMixin:
         constraints = evaluate_constraints(properties, self._scenario)
         constraint_margins = evaluate_constraint_margins(properties, self._scenario)
         constraint_margin_score = sum(constraint_margins.values()) / max(len(constraint_margins), 1)
+        constraint_fraction = sum(1.0 for passed, _ in constraints.values() if passed) / max(len(constraints), 1)
         submitted = self._state.submitted
+        coordination_score = self._coordination_score()
+        evidence_score = self._evidence_score()
+        budget_score = self._open_unit_interval(
+            self._state.remaining_budget / max(self._scenario.oracle_budget, 1),
+        )
+        progress_score = self._grade_progress(
+            candidate_score=compute_objective_score(properties, self._scenario),
+            constraint_margin_score=constraint_margin_score,
+            constraint_fraction=constraint_fraction,
+            evidence_score=evidence_score,
+            coordination_score=coordination_score,
+            budget_score=budget_score,
+        )
+        submission_score = self._grade_submission(properties) if submitted else 0.0
+        final_score = self._grade_final(
+            submission_score=submission_score,
+            progress_score=progress_score,
+            submitted=submitted,
+            constraint_fraction=constraint_fraction,
+            evidence_score=evidence_score,
+        )
         return {
+            "final_score": final_score,
             "potency_score": self._open_unit_interval(properties["potency"]),
             "safety_score": self._open_unit_interval(1.0 - properties["toxicity"]),
             "synth_score": self._open_unit_interval(properties["synth"]),
@@ -250,14 +273,74 @@ class MolForgeViewMixin:
                 sum(1.0 for passed, _ in constraints.values() if passed) / max(len(constraints), 1),
             ),
             "constraint_margin_score": self._open_unit_interval(constraint_margin_score),
-            "budget_score": self._open_unit_interval(
-                self._state.remaining_budget / max(self._scenario.oracle_budget, 1),
-            ),
+            "budget_score": budget_score,
             "submitted_score": 1.0 if submitted else 0.0,
-            "submission_score": self._grade_submission(properties) if submitted else 0.0,
-            "coordination_score": self._open_unit_interval(self._coordination_score()),
-            "evidence_score": self._open_unit_interval(self._evidence_score()),
+            "submission_score": submission_score,
+            "progress_score": progress_score,
+            "coordination_score": self._open_unit_interval(coordination_score),
+            "evidence_score": self._open_unit_interval(evidence_score),
         }
+
+    def _grade_progress(
+        self,
+        *,
+        candidate_score: float,
+        constraint_margin_score: float,
+        constraint_fraction: float,
+        evidence_score: float,
+        coordination_score: float,
+        budget_score: float,
+    ) -> float:
+        """Score scientific progress even when no formal submission happened."""
+
+        progress = (
+            0.45 * candidate_score
+            + 0.35 * constraint_margin_score
+            + 0.10 * evidence_score
+            + 0.05 * coordination_score
+            + 0.05 * budget_score
+        )
+        repeated_assays = sum(max(0, runs - 1) for runs in self._assay_runs.values())
+        policy_vetoes = sum(
+            1
+            for entry in self._history
+            if entry.get("governance", {}).get("status") == "policy_veto"
+        )
+        progress -= min(0.20, 0.04 * repeated_assays)
+        progress -= min(0.20, 0.05 * policy_vetoes)
+
+        if constraint_fraction < 1.0:
+            progress = min(progress, 0.25 + 0.25 * constraint_fraction)
+        if not self._state.submitted and evidence_score < 0.99:
+            progress = min(progress, 0.45)
+        if self._scenario.trap_penalty and not self._restart_used:
+            progress = min(progress, 0.30)
+        if self._state.submitted:
+            progress += 0.05
+        return self._open_unit_interval(progress)
+
+    def _grade_final(
+        self,
+        *,
+        submission_score: float,
+        progress_score: float,
+        submitted: bool,
+        constraint_fraction: float,
+        evidence_score: float,
+    ) -> float:
+        """Single conservative scalar for RL/evaluation headline reporting."""
+
+        if submitted:
+            return self._open_unit_interval(submission_score)
+
+        score = 0.35 * progress_score
+        if constraint_fraction < 1.0:
+            score = min(score, 0.05 + 0.10 * constraint_fraction)
+        if evidence_score < 0.99:
+            score = min(score, 0.15)
+        if self._scenario.trap_penalty and not self._restart_used:
+            score = min(score, 0.08)
+        return self._open_unit_interval(score)
 
     def _coordination_score(self) -> float:
         expected_messages = 0
@@ -327,9 +410,11 @@ class MolForgeViewMixin:
             f"Toxicity: {properties['toxicity']:.3f}",
             f"Synthesizability: {properties['synth']:.3f}",
             f"Novelty: {properties['novelty']:.3f}",
+            f"Final score: {grader_scores['final_score']:.3f}",
             f"Candidate scientific score: {grader_scores['candidate_score']:.3f}",
             f"Constraint margin score: {grader_scores['constraint_margin_score']:.3f}",
             f"Submission grader: {grader_scores['submission_score']:.3f}",
+            f"Progress score: {grader_scores['progress_score']:.3f}",
             f"Coordination score: {grader_scores['coordination_score']:.3f}",
             f"Evidence score: {grader_scores['evidence_score']:.3f}",
             "Constraints:",

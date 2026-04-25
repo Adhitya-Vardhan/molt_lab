@@ -646,6 +646,7 @@ def planned_fragment_edit(
     plans = {
         "level_0_easy": [
             ("solvent_tail", "morpholine", "Morpholine improves safety and keeps synthesis comfortably feasible."),
+            ("back_pocket", "cyano", "Cyano repairs the chloro safety liability while preserving potency."),
             ("hinge", "azaindole", "Azaindole is needed to clear the stricter potency floor after safety is stabilized."),
         ],
         "level_1_medium": [
@@ -669,7 +670,7 @@ def on_planned_final_candidate(
             "warhead": "acrylamide",
             "hinge": "azaindole",
             "solvent_tail": "morpholine",
-            "back_pocket": "methoxy",
+            "back_pocket": "cyano",
         },
         "level_1_medium": {
             "warhead": "acrylamide",
