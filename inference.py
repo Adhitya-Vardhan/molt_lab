@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, cast
+from typing import Any, Optional, cast
 
 from openai import OpenAI
 
@@ -22,64 +22,91 @@ except ImportError:
     from models import MolForgeAction, MolForgeObservation
     from server.molforge_environment import MolForgeEnvironment
 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+API_BASE_URL = os.getenv("API_BASE_URL")
 MODEL_NAME = os.getenv("MODEL_NAME")
-HF_TOKEN = os.getenv("HF_TOKEN")
+API_KEY = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
 MAX_TURNS = 10
 MODEL_TIMEOUT_S = float(os.getenv("MODEL_TIMEOUT_S", "35"))
 MODEL_LONG_TIMEOUT_S = float(os.getenv("MODEL_LONG_TIMEOUT_S", "45"))
 MODEL_RETRY_TIMEOUT_S = float(os.getenv("MODEL_RETRY_TIMEOUT_S", "15"))
 MODEL_MAX_TOKENS = int(os.getenv("MODEL_MAX_TOKENS", "220"))
+MIN_REPORTED_SCORE = 1e-6
+MAX_REPORTED_SCORE = 1.0 - 1e-6
 
 
 def main() -> None:
     env = MolForgeEnvironment()
-    if not MODEL_NAME or not HF_TOKEN:
-        raise RuntimeError("MODEL_NAME and HF_TOKEN are required. No heuristic fallback is available.")
-    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+    if not API_BASE_URL or not MODEL_NAME or not API_KEY:
+        raise RuntimeError(
+            "API_BASE_URL, MODEL_NAME, and API_KEY or HF_TOKEN are required. "
+            "No heuristic fallback is available."
+        )
+    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
     scores = []
+    raw_final_scores = []
     submission_scores = []
     progress_scores = []
     model_action_count = 0
     for episode_index in range(3):
         observation = env.reset()
-        print(f"\n=== Episode {episode_index + 1}: {observation.scenario_id} ===")
+        task_name = observation.scenario_id
+        episode_error = ""
+        print(
+            f"[START] task={task_name} difficulty={observation.difficulty} episode={episode_index + 1}",
+            flush=True,
+        )
 
         for _ in range(MAX_TURNS):
             if observation.done:
                 break
-            action = choose_action(client, observation)
-            model_action_count += 1
-            observation = env.step(action)
+            try:
+                action = choose_action(client, observation)
+                model_action_count += 1
+                observation = env.step(action)
+            except Exception as exc:
+                episode_error = f"{exc.__class__.__name__}:{exc}"
+                print(
+                    f"[STEP] task={task_name} step={observation.step_index + 1} "
+                    f"reward=0.000000 action=model_error status=failed",
+                    flush=True,
+                )
+                break
             print(
-                f"step={observation.step_index:02d} action={action.action_type} actor={action.acting_role} "
-                f"source=model reward={observation.reward:+.3f} budget={observation.remaining_budget} "
-                f"governance={observation.governance.status} messages={len(action.messages)}"
+                f"[STEP] task={task_name} step={observation.step_index} "
+                f"reward={observation.reward:.6f} action={action.action_type} "
+                f"actor={action.acting_role} status={observation.governance.status}",
+                flush=True,
             )
-            print(f"  {observation.last_transition_summary}")
             if observation.done:
                 break
 
         grader_scores = observation.metadata.get("terminal_grader_scores", {})
-        final_score = float(grader_scores.get("final_score", grader_scores.get("submission_score", 0.0)))
+        raw_final_score = float(grader_scores.get("final_score", grader_scores.get("submission_score", 0.0)))
+        final_score = reportable_score(raw_final_score)
         submission_score = float(grader_scores.get("submission_score", 0.0))
         progress_score = float(grader_scores.get("progress_score", 0.0))
         scores.append(final_score)
+        raw_final_scores.append(raw_final_score)
         submission_scores.append(submission_score)
         progress_scores.append(progress_score)
-        print(f"final_score={final_score:.3f}")
-        print(f"submission_score={submission_score:.3f}")
-        print(f"progress_score={progress_score:.3f}")
+        end_line = (
+            f"[END] task={task_name} score={final_score:.6f} raw_score={raw_final_score:.6f} "
+            f"submission_score={submission_score:.6f} progress_score={progress_score:.6f} "
+            f"steps={observation.step_index}"
+        )
+        if episode_error:
+            end_line += f" error={json.dumps(episode_error)}"
+        print(end_line, flush=True)
         if observation.report_card:
-            print(observation.report_card)
+            print(observation.report_card, flush=True)
 
     average = sum(scores) / len(scores)
     average_progress = sum(progress_scores) / len(progress_scores)
-    print("\n=== Baseline Summary ===")
     summary = {
         "scores": scores,
-        "average_final_score": round(average, 4),
+        "raw_final_scores": raw_final_scores,
+        "average_final_score": round(reportable_score(average), 6),
         "submission_scores": submission_scores,
         "average_submission_score": round(sum(submission_scores) / len(submission_scores), 4),
         "progress_scores": progress_scores,
@@ -89,7 +116,17 @@ def main() -> None:
         "api_base_url": API_BASE_URL,
         "fallback_enabled": False,
     }
-    print(json.dumps(summary, indent=2))
+    print("[SUMMARY] " + json.dumps(summary, separators=(",", ":")), flush=True)
+
+
+def reportable_score(score: float) -> float:
+    """Validator-facing scores must be strictly between 0 and 1."""
+
+    if score <= 0.0:
+        return MIN_REPORTED_SCORE
+    if score >= 1.0:
+        return MAX_REPORTED_SCORE
+    return score
 
 
 def choose_action(client: OpenAI, observation: MolForgeObservation) -> MolForgeAction:

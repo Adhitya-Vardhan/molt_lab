@@ -246,3 +246,13 @@ Reference offline smoke-test baseline from the deterministic trace policy used o
 ## Deployment
 
 The environment is packaged as a FastAPI OpenEnv Space using the repo-root [Dockerfile](Dockerfile) for validator compatibility, with [server/Dockerfile](server/Dockerfile) retained for OpenEnv-style server packaging. The root manifest is [openenv.yaml](openenv.yaml), so `openenv push` or a Docker Hugging Face Space can deploy it.
+
+## Pre-RL SFT Adapter
+
+The current Qwen3.5 2B QLoRA/SFT v4 adapter is stored in the Hugging Face Space at `adapters/qwen3_5_2b_lora_adapters_compact_v4/`. It is intentionally excluded from the Docker build context so the OpenEnv server stays lightweight, but the adapter files remain available from the Space repository for model debugging.
+
+Before RL, that adapter produced these strict MolForge `final_score` values:
+
+- `level_0_easy`: `0.1167`
+- `level_1_medium`: `0.1167`
+- `level_2_hard`: `0.0800`
