@@ -1,0 +1,8 @@
+openenv-core[core]>=0.2.3
+fastapi>=0.115.0
+uvicorn>=0.30.0
+pydantic>=2.8.0
+rdkit>=2023.9.5,<2024.3.1; python_version < "3.13"
+rdkit>=2026.3.1; python_version >= "3.13"
+# Optional TDC oracle support:
+# pytdc>=1.1.0; python_version < "3.13"

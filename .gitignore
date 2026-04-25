@@ -1,0 +1,41 @@
+# macOS / editor noise
+.DS_Store
+*.swp
+*.swo
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Build/package outputs
+build/
+dist/
+*.egg-info/
+
+# Local secrets and notebooks
+.env
+.env.*
+*.ipynb_checkpoints/
+
+# Generated model/adapters/checkpoints
+qwen3_5_2b_lora_adapters*/
+artifacts/
+outputs/
+checkpoints/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+
+# Legacy/generated SFT artifacts. Keep the current v4 dataset in issue/.
+data/*.jsonl
+issue/molforge_sft_compact_policy_v3.jsonl
+qwen3_5_2b_unsloth_sft.py
+analysis_results.md
