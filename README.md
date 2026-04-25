@@ -132,6 +132,8 @@ This keeps the environment informative for training while making exploitation vi
 
 For SFT/RL training guidance, trace generation, randomization flags, and reward-hacking precautions, see [TRAINING_INSTRUCTIONS.md](TRAINING_INSTRUCTIONS.md).
 
+For the judge-rerunnable RL evidence workflow, use [issue/molforge_grpo_colab_training.ipynb](issue/molforge_grpo_colab_training.ipynb) or the underlying script [issue/qwen3_5_2b_unsloth_grpo_rl.py](issue/qwen3_5_2b_unsloth_grpo_rl.py). The run writes reward/loss curves, before/after evaluation JSON, completion-level reward logs, and trained adapters to Google Drive; see [RL_TRAINING_COLAB.md](RL_TRAINING_COLAB.md).
+
 ## Multi-Agent Workflow
 
 Each environment step represents one coordinated team decision:

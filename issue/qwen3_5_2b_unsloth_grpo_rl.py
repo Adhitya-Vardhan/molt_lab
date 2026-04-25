@@ -1,19 +1,21 @@
 # -*- coding: utf-8 -*-
-"""MolForge GRPO RL training script for Kaggle/Colab.
+"""MolForge GRPO RL training script for Colab/Kaggle.
 
 This script continues from the SFT LoRA adapter and trains against the real
 MolForge environment reward. It writes rich debug logs, metrics CSV/JSON, plots,
 and adapter checkpoints so reward curves can be shown in the hackathon demo.
 
-Recommended Kaggle env before running:
+Recommended Colab setup:
 
-import os
-os.environ["MAX_SEQ_LENGTH"] = "2048"
-os.environ["MAX_PROMPT_LENGTH"] = "1536"
-os.environ["MAX_COMPLETION_LENGTH"] = "384"
-os.environ["RL_MAX_STEPS"] = "80"
-os.environ["NUM_GENERATIONS"] = "2"
-os.environ["SFT_ADAPTER_PATH"] = "/kaggle/input/<adapter-dataset>/qwen3_5_2b_lora_adapters_policy_v4"
+    !pip install -U "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+    !pip install -U "trl>=0.21.0" peft accelerate bitsandbytes datasets matplotlib pandas
+
+    import os
+    os.environ["SFT_ADAPTER_PATH"] = "/content/drive/MyDrive/.../qwen3_5_2b_lora_adapters_compact_v4"
+    os.environ["DRIVE_OUTPUT_DIR"] = "/content/drive/MyDrive/MolForge_RL_Runs"
+    os.environ["RL_MAX_STEPS"] = "80"
+    os.environ["NUM_GENERATIONS"] = "2"
+    !python issue/qwen3_5_2b_unsloth_grpo_rl.py
 """
 
 from __future__ import annotations
@@ -28,13 +30,15 @@ import subprocess
 import sys
 import time
 from collections import Counter, defaultdict
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import torch
+
 
 REPO_URL = os.getenv("MOLFORGE_REPO_URL", "https://github.com/Adhitya-Vardhan/molt_lab.git")
-PROJECT_ROOT = Path(os.getenv("MOLFORGE_PROJECT_ROOT", "/kaggle/working/molt_lab"))
+DEFAULT_PROJECT_ROOT = "/content/molt_lab" if Path("/content").exists() else "/kaggle/working/molt_lab"
+PROJECT_ROOT = Path(os.getenv("MOLFORGE_PROJECT_ROOT", DEFAULT_PROJECT_ROOT))
 
 
 def ensure_project_available() -> Path:
@@ -102,15 +106,18 @@ RL_MAX_STEPS = int(os.getenv("RL_MAX_STEPS", "80"))
 NUM_GENERATIONS = int(os.getenv("NUM_GENERATIONS", "2"))
 PROMPT_EPISODES = int(os.getenv("RL_PROMPT_EPISODES", "96"))
 PROMPT_MAX_TURNS = int(os.getenv("RL_PROMPT_MAX_TURNS", "8"))
+EVAL_MAX_TURNS = int(os.getenv("EVAL_MAX_TURNS", "10"))
+RUN_EVAL = os.getenv("RUN_EVAL", "1").lower() in {"1", "true", "yes"}
 LEARNING_RATE = float(os.getenv("RL_LEARNING_RATE", "2e-6"))
-PER_DEVICE_BATCH = int(os.getenv("RL_BATCH_SIZE", "1"))
+PER_DEVICE_BATCH = int(os.getenv("RL_BATCH_SIZE", "2"))
 GRAD_ACCUM = int(os.getenv("RL_GRAD_ACCUM", "4"))
 SAVE_STEPS = int(os.getenv("RL_SAVE_STEPS", "25"))
 LOGGING_STEPS = int(os.getenv("RL_LOGGING_STEPS", "1"))
 SEED = int(os.getenv("RL_SEED", "3407"))
 USE_UNSLOTH = os.getenv("USE_UNSLOTH", "true").lower() in {"1", "true", "yes"}
 RUN_NAME = os.getenv("RUN_NAME", time.strftime("molforge_grpo_%Y%m%d_%H%M%S"))
-OUTPUT_ROOT = Path(os.getenv("RL_OUTPUT_ROOT", "/kaggle/working/molforge_rl_runs"))
+DEFAULT_OUTPUT_ROOT = "/content/molforge_rl_runs" if Path("/content").exists() else "/kaggle/working/molforge_rl_runs"
+OUTPUT_ROOT = Path(os.getenv("RL_OUTPUT_ROOT", DEFAULT_OUTPUT_ROOT))
 OUTPUT_DIR = OUTPUT_ROOT / RUN_NAME
 LOG_DIR = OUTPUT_DIR / "logs"
 PLOT_DIR = OUTPUT_DIR / "plots"
@@ -123,11 +130,13 @@ def find_sft_adapter_path() -> str:
     if explicit:
         return explicit
     candidates = [
+        Path("/content/drive/MyDrive/Qwen_3.5_finetune/qwen3_5_2b_lora_adapters_compact_v4"),
         Path("/kaggle/working/qwen3_5_2b_lora_adapters_policy_v4"),
         Path("/content/drive/MyDrive/Qwen_3.5_finetune/qwen3_5_2b_lora_adapters_policy_v4"),
     ]
     kaggle_input = Path("/kaggle/input")
     if kaggle_input.exists():
+        candidates.extend(sorted(kaggle_input.rglob("qwen3_5_2b_lora_adapters_compact_v4")))
         candidates.extend(sorted(kaggle_input.rglob("qwen3_5_2b_lora_adapters_policy_v4")))
         candidates.extend(sorted(kaggle_input.rglob("adapter_config.json")))
     for candidate in candidates:
@@ -149,6 +158,9 @@ COMPLETION_LOG = LOG_DIR / "completion_rewards.jsonl"
 TRAINER_LOG = LOG_DIR / "trainer_log_history.jsonl"
 SUMMARY_JSON = OUTPUT_DIR / "rl_summary.json"
 METRICS_CSV = OUTPUT_DIR / "completion_metrics.csv"
+RUN_MANIFEST_JSON = OUTPUT_DIR / "run_manifest.json"
+EVAL_BEFORE_JSON = OUTPUT_DIR / "eval_before_training.json"
+EVAL_AFTER_JSON = OUTPUT_DIR / "eval_after_training.json"
 
 
 def as_completion_text(completion: Any) -> str:
@@ -306,7 +318,9 @@ def evaluate_completion(record: dict[str, Any], completion_text: str) -> tuple[f
             "budget_used": next_observation.budget_used,
             "last_transition_summary": next_observation.last_transition_summary,
             "reward_components": components,
+            "final_score": grader_scores.get("final_score"),
             "submission_score": grader_scores.get("submission_score"),
+            "progress_score": grader_scores.get("progress_score"),
             "candidate_score": grader_scores.get("candidate_score"),
             "evidence_score": grader_scores.get("evidence_score"),
             "budget_score": grader_scores.get("budget_score"),
@@ -396,6 +410,7 @@ def make_grpo_config() -> GRPOConfig:
         "bf16": is_bfloat16_supported(),
         "fp16": not is_bfloat16_supported(),
         "report_to": [],
+        "log_completions": os.getenv("RL_LOG_COMPLETIONS", "0") == "1",
         "remove_unused_columns": False,
         "seed": SEED,
     }
@@ -421,7 +436,9 @@ def write_completion_metrics_csv() -> list[dict[str, Any]]:
         "governance_status",
         "remaining_budget",
         "budget_used",
+        "final_score",
         "submission_score",
+        "progress_score",
         "candidate_score",
         "evidence_score",
         "budget_score",
@@ -437,6 +454,7 @@ def write_completion_metrics_csv() -> list[dict[str, Any]]:
 
 def write_summary_and_plots() -> None:
     rows = write_completion_metrics_csv()
+    trainer_rows = read_jsonl(TRAINER_LOG)
     if not rows:
         return
     rewards = [float(row.get("reward", 0.0)) for row in rows]
@@ -463,6 +481,7 @@ def write_summary_and_plots() -> None:
             scenario: sum(values) / max(len(values), 1)
             for scenario, values in scenario_rewards.items()
         },
+        "latest_trainer_log": trainer_rows[-1] if trainer_rows else {},
     }
     SUMMARY_JSON.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
@@ -492,8 +511,202 @@ def write_summary_and_plots() -> None:
         plt.tight_layout()
         plt.savefig(PLOT_DIR / "action_distribution.png", dpi=160)
         plt.close()
+
+        if trainer_rows:
+            plot_trainer_metric(trainer_rows, "loss", PLOT_DIR / "loss_curve.png")
+            plot_trainer_metric(trainer_rows, "grad_norm", PLOT_DIR / "grad_norm_curve.png")
+
+        eval_before = read_json_file(EVAL_BEFORE_JSON)
+        eval_after = read_json_file(EVAL_AFTER_JSON)
+        if eval_before and eval_after:
+            plot_eval_comparison(eval_before, eval_after)
     except Exception as exc:
         print(f"Plotting skipped: {exc}")
+
+
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.open(encoding="utf-8") if line.strip()]
+
+
+def read_json_file(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def plot_trainer_metric(rows: list[dict[str, Any]], metric: str, output_path: Path) -> None:
+    points = [(row.get("step"), row.get(metric)) for row in rows if row.get(metric) is not None]
+    if not points:
+        return
+    steps, values = zip(*points)
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(9, 4))
+    plt.plot(steps, values, marker="o", linewidth=1.5)
+    plt.xlabel("Trainer step")
+    plt.ylabel(metric)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=160)
+    plt.close()
+
+
+def plot_eval_comparison(before: dict[str, Any], after: dict[str, Any]) -> None:
+    before_scores = {row["scenario_id"]: row["final_score"] for row in before.get("episodes", [])}
+    after_scores = {row["scenario_id"]: row["final_score"] for row in after.get("episodes", [])}
+    labels = sorted(set(before_scores) | set(after_scores))
+    if not labels:
+        return
+    x_positions = list(range(len(labels)))
+    width = 0.36
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(8, 4))
+    plt.bar(
+        [value - width / 2 for value in x_positions],
+        [before_scores.get(label, 0.0) for label in labels],
+        width,
+        label="before RL",
+    )
+    plt.bar(
+        [value + width / 2 for value in x_positions],
+        [after_scores.get(label, 0.0) for label in labels],
+        width,
+        label="after RL",
+    )
+    plt.xticks(x_positions, labels, rotation=20, ha="right")
+    plt.ylabel("final_score")
+    plt.ylim(0, 1)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(PLOT_DIR / "eval_before_after.png", dpi=160)
+    plt.close()
+
+
+def generate_policy_action(model, tokenizer, observation) -> tuple[MolForgeAction | None, str, str]:
+    prompt_payload = compact_action_payload(observation)
+    messages = [
+        {"role": "system", "content": COMPACT_ACTION_SYSTEM_PROMPT},
+        {"role": "user", "content": json.dumps(prompt_payload, separators=(",", ":"))},
+    ]
+    try:
+        prompt = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+    except TypeError:
+        prompt = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    device = next(model.parameters()).device
+    inputs = tokenizer(prompt, return_tensors="pt").to(device)
+    with torch.inference_mode():
+        generated = model.generate(
+            **inputs,
+            do_sample=False,
+            max_new_tokens=MAX_COMPLETION_LENGTH,
+            pad_token_id=tokenizer.pad_token_id,
+            eos_token_id=tokenizer.eos_token_id,
+        )
+    new_tokens = generated[0, inputs["input_ids"].shape[-1] :]
+    text = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+    try:
+        return MolForgeAction(**extract_json(text)), text, ""
+    except Exception as exc:
+        return None, text, f"{exc.__class__.__name__}: {exc}"
+
+
+def evaluate_policy_rollouts(model, tokenizer, label: str, output_path: Path) -> dict[str, Any]:
+    previous_randomization = os.environ.get("MOLFORGE_TRAINING_RANDOMIZATION")
+    previous_reward_mode = os.environ.get("MOLFORGE_REWARD_MODE")
+    os.environ.pop("MOLFORGE_TRAINING_RANDOMIZATION", None)
+    os.environ["MOLFORGE_REWARD_MODE"] = "assay_gated"
+    if FastLanguageModel is not None:
+        try:
+            FastLanguageModel.for_inference(model)
+        except Exception:
+            pass
+    model.eval()
+    episodes: list[dict[str, Any]] = []
+    try:
+        env = MolForgeEnvironment()
+        for _ in range(3):
+            observation = env.reset()
+            trace: list[dict[str, Any]] = []
+            error = ""
+            for _turn in range(EVAL_MAX_TURNS):
+                if observation.done:
+                    break
+                action, raw_text, parse_error = generate_policy_action(model, tokenizer, observation)
+                if action is None:
+                    error = parse_error
+                    trace.append(
+                        {
+                            "step": observation.step_index,
+                            "raw_text": raw_text[:2000],
+                            "error": parse_error,
+                        }
+                    )
+                    break
+                action = attach_team_messages(observation, attach_reasoning_fields(observation, action))
+                observation = env.step(action)
+                trace.append(
+                    {
+                        "step": observation.step_index,
+                        "action_type": action.action_type,
+                        "acting_role": action.acting_role,
+                        "slot": action.slot,
+                        "fragment": action.fragment,
+                        "tool_name": action.tool_name,
+                        "reward": observation.reward,
+                        "governance_status": observation.governance.status,
+                        "summary": observation.last_transition_summary,
+                    }
+                )
+            scores = observation.metadata.get("terminal_grader_scores", {})
+            episodes.append(
+                {
+                    "scenario_id": observation.scenario_id,
+                    "difficulty": observation.difficulty,
+                    "final_score": float(scores.get("final_score", scores.get("submission_score", 0.0))),
+                    "submission_score": float(scores.get("submission_score", 0.0)),
+                    "progress_score": float(scores.get("progress_score", 0.0)),
+                    "steps": observation.step_index,
+                    "done": observation.done,
+                    "error": error,
+                    "trace": trace,
+                }
+            )
+    finally:
+        if previous_randomization is None:
+            os.environ.pop("MOLFORGE_TRAINING_RANDOMIZATION", None)
+        else:
+            os.environ["MOLFORGE_TRAINING_RANDOMIZATION"] = previous_randomization
+        if previous_reward_mode is None:
+            os.environ.pop("MOLFORGE_REWARD_MODE", None)
+        else:
+            os.environ["MOLFORGE_REWARD_MODE"] = previous_reward_mode
+        if FastLanguageModel is not None:
+            try:
+                FastLanguageModel.for_training(model)
+            except Exception:
+                pass
+        model.train()
+
+    result = {
+        "label": label,
+        "episodes": episodes,
+        "average_final_score": sum(row["final_score"] for row in episodes) / max(len(episodes), 1),
+        "average_submission_score": sum(row["submission_score"] for row in episodes) / max(len(episodes), 1),
+        "submit_rate": sum(1 for row in episodes if row["submission_score"] > 0.0) / max(len(episodes), 1),
+    }
+    output_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    return result
 
 
 def copy_outputs_to_drive() -> None:
@@ -514,24 +727,26 @@ def zip_outputs() -> Path:
 
 
 def main() -> None:
-    print(
-        json.dumps(
-            {
-                "run_name": RUN_NAME,
-                "root": str(ROOT),
-                "output_dir": str(OUTPUT_DIR),
-                "base_model": BASE_MODEL_NAME,
-                "sft_adapter_path": SFT_ADAPTER_PATH,
-                "max_seq_length": MAX_SEQ_LENGTH,
-                "max_prompt_length": MAX_PROMPT_LENGTH,
-                "max_completion_length": MAX_COMPLETION_LENGTH,
-                "rl_max_steps": RL_MAX_STEPS,
-                "num_generations": NUM_GENERATIONS,
-                "reward_mode": os.getenv("MOLFORGE_REWARD_MODE"),
-            },
-            indent=2,
-        )
-    )
+    manifest = {
+        "run_name": RUN_NAME,
+        "root": str(ROOT),
+        "output_dir": str(OUTPUT_DIR),
+        "base_model": BASE_MODEL_NAME,
+        "sft_adapter_path": SFT_ADAPTER_PATH,
+        "max_seq_length": MAX_SEQ_LENGTH,
+        "max_prompt_length": MAX_PROMPT_LENGTH,
+        "max_completion_length": MAX_COMPLETION_LENGTH,
+        "rl_max_steps": RL_MAX_STEPS,
+        "num_generations": NUM_GENERATIONS,
+        "learning_rate": LEARNING_RATE,
+        "per_device_batch": PER_DEVICE_BATCH,
+        "gradient_accumulation": GRAD_ACCUM,
+        "reward_mode": os.getenv("MOLFORGE_REWARD_MODE"),
+        "drive_output_dir": DRIVE_OUTPUT_DIR,
+        "run_eval": RUN_EVAL,
+    }
+    RUN_MANIFEST_JSON.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    print(json.dumps(manifest, indent=2))
 
     prompt_records = build_prompt_records()
     (OUTPUT_DIR / "prompt_dataset_preview.json").write_text(
@@ -545,6 +760,10 @@ def main() -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    if RUN_EVAL:
+        before = evaluate_policy_rollouts(model, tokenizer, "before_rl", EVAL_BEFORE_JSON)
+        print("Before-RL evaluation:", json.dumps(before, indent=2)[:3000])
+
     trainer = GRPOTrainer(
         model=model,
         reward_funcs=molforge_reward_func,
@@ -557,6 +776,9 @@ def main() -> None:
 
     trainer.save_model(str(ADAPTER_SAVE_DIR))
     tokenizer.save_pretrained(str(ADAPTER_SAVE_DIR))
+    if RUN_EVAL:
+        after = evaluate_policy_rollouts(model, tokenizer, "after_rl", EVAL_AFTER_JSON)
+        print("After-RL evaluation:", json.dumps(after, indent=2)[:3000])
     write_summary_and_plots()
     archive = zip_outputs()
     copy_outputs_to_drive()
