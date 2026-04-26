@@ -9,252 +9,154 @@ app_port: 8000
 
 # MolForge
 
-MolForge is an OpenEnv environment for medicinal chemistry lead optimization. A specialist team iteratively edits a KRAS G12C candidate under limited assay budget, partial observability, and strict safety constraints. The environment uses RDKit-backed molecular descriptors and TDC molecule oracles when available, blended with target-specific KRAS surrogate logic so it stays lightweight enough for the OpenEnv hackathon validator while still modeling a real scientific workflow.
+This repository implements an OpenEnv-compatible reinforcement learning environment for **medicinal chemistry lead optimization**. The agent does not directly see the true biological properties of the candidate molecule. Instead, a specialist team iteratively edits a KRAS G12C candidate under limited assay budget, partial observability, and strict safety constraints, receiving a noisy simulated output, and is rewarded for discovering a highly potent, synthesizable, and safe drug candidate.
 
-## Why this is a real-world task
+The environment is designed as a **partially observable Markov decision process (POMDP)** with:
+- hidden ground-truth molecular properties and scenario constraints
+- hidden target mutation traps
+- visible task metadata, team communication, assay results, and remaining budget
+- dense step-wise reward (in curriculum mode) plus terminal reward for submission quality
 
-Medicinal chemists routinely make scaffold edits, request assays, triage toxicity risk, and decide when to stop spending budget on a candidate. MolForge turns that workflow into a stateful environment with constrained actions, hidden property values, specialist review messages, governance/veto rules, grader-backed submissions, and reproducible episode traces.
+At a high level, each episode looks like this:
+1. `reset()` picks a biological scenario (e.g. `level_1_medium`) and seeds the simulator.
+2. The agent receives a `MolForgeObservation` describing the task, the starting molecule scaffold, and the current visible state.
+3. The agent (acting as different roles) submits a `MolForgeAction` such as `edit`, `run_assay`, `propose_nomination`, or `submit`.
+4. The **Governance rule engine** checks whether the action is valid, requiring multi-agent consensus for final decisions.
+5. The transition engine updates the molecule, spends the assay budget, and returns oracle readings.
+6. The reward computer scores the step based on whether the action was invalid, vetoed, or successful.
+7. The environment returns a new observation with updated history, assay readings, and reward.
+8. The episode ends when the agent successfully submits the molecule, exhausts its budget, or reaches the maximum step horizon.
 
-## Task Set
+---
 
-MolForge rotates through three built-in tasks on successive `reset()` calls:
+## Hidden state vs Visible state
 
-1. `level_0_easy`
-   Potency-first optimization with a generous budget and a starting scaffold that is one or two edits from success.
-2. `level_1_medium`
-   Multi-objective optimization with safety as a hard constraint and moderate budget pressure.
-3. `level_2_hard`
-   A sunk-cost trap plus late target mutation. The initial scaffold family has a hidden liability, and the best policy is often to restart early.
+### Hidden state
+The simulator keeps ground-truth properties that the agent never directly sees. It contains:
+- The true underlying scoring functions for `potency`, `safety`, and `synthesizability`.
+- Sunk-cost traps and late-stage target mutations (e.g., in `level_2_hard`).
+- The strict constraints required for a valid submission.
+- The remaining hidden milestones for the scenario.
 
-Each task has a deterministic grader that outputs scores in the `0.0` to `1.0` range:
+### Visible state
+The agent only sees `MolForgeObservation`, which includes:
+- The current `TaskSpec` and `scenario_id`.
+- Pipeline history and previous actions.
+- The current molecular scaffold (in SMILES format).
+- The `budget_used` and `remaining_budget`.
+- Responses from the `run_assay` oracle (TDC predictors and RDKit descriptors).
+- The `GovernanceStatus` showing which specialist agents have approved or objected.
+- The `step_reward_breakdown`.
 
-- `final_score`
-- `potency_score`
-- `safety_score`
-- `synth_score`
-- `novelty_score`
-- `candidate_score`
-- `constraint_score`
-- `budget_score`
-- `coordination_score`
-- `evidence_score`
-- `submission_score`
+This separation is what makes the environment a POMDP rather than a fully observed simulator.
 
-## Action Space
+---
 
-`MolForgeAction` is a typed Pydantic model with these high-level actions:
+## Repository files navigation
 
-- `edit`
-  Requires `acting_role="lead_chemist"`, `edit_type`, `slot`, and usually `fragment`
-- `run_assay`
-  Requires `acting_role="assay_planner"` and `tool_name`
-- `submit`
-- `restart`
-- `defer`
+### `models.py`
+Defines the Pydantic contracts that all other modules use:
+- `MolForgeAction`: One structured step chosen by the agent. Fields include `action_type`, `acting_role`, `tool_name`, `slot`, `fragment`, and `rationale`.
+- `MolForgeObservation`: What the agent can see after each step; includes `current_molecule`, `last_transition_summary`, `reward_breakdown`, and `governance_status`.
+- `MolForgeState`: The internal tracked state including `episode_id`, `step_count`, and `invalid_action_count`.
 
-Each action also carries a typed `messages` bundle containing specialist communication such as:
+### `server/scenarios.py`
+This is where episodes come from. It defines a curated library of three biological scenarios, each bundling a starting scaffold, a budget, and a specific molecular target:
+- `level_0_easy`: Potency-first optimization with a generous budget and a starting scaffold that is one or two edits from success.
+- `level_1_medium`: Multi-objective optimization with safety as a hard constraint and moderate budget pressure.
+- `level_2_hard`: A sunk-cost trap plus late target mutation. The initial scaffold family has a hidden liability, and the best policy is often to restart early.
 
-- `proposal`
-- `approval`
-- `objection`
-- `risk_flag`
-- `assay_request`
-- `rejection`
-- `submission_recommendation`
+### `server/actions.py` & `server/governance.py`
+The rule engines enforcing scientific and procedural constraints before each action is applied:
+- `run_assay`: Costs budget. Evaluates the current molecule using TDC Oracles and RDKit logic.
+- `edit`: Replaces a specific R-group slot with a new fragment from the fragment library. Clears previously gathered evidence.
+- `submit`: Ends the episode. Triggers the final evaluation grader. 
+- **Governance**: Certain actions require multi-agent consensus. If the `Lead Chemist` tries to submit without the `Safety Specialist`'s approval, the action is vetoed.
 
-Actions also include bounded, auditable reasoning fields:
+### `server/molforge_environment.py`
+This is the orchestration layer that ties everything together.
+On `reset()` it:
+- Generates a task scenario.
+- Clears the message log, history, and resets the molecule to the default scaffold.
 
-- `rationale`: short public explanation
-- `evidence`: visible observation facts supporting the decision
-- `expected_effects`: directional predictions such as `toxicity="down"` or `budget="down"`
+On `step()` it:
+- Checks governance rules and validates the action.
+- Executes the action (e.g. replacing an R-group fragment or running an assay).
+- Computes reward (via Curriculum or Assay-Gated mode).
+- Builds the next `MolForgeObservation`.
 
-Enabled roles:
+---
 
-- `lead_chemist`
-- `toxicologist`
-- `assay_planner`
-- `process_chemist`
+## What actually happens on one step
+Here is the concrete order of operations for `env.step(action)`:
+1. Increment the step counter.
+2. Run validation checks. If the action format is invalid, return a failure report and a `-1.0` reward.
+3. Assess **Governance**. If a required specialist agent vetoes the action, the action is blocked and penalized.
+4. Execute the action (`edit`, `run_assay`, `submit`).
+5. Deduct oracle budget if `run_assay` was called.
+6. Compute decomposed reward from the state transition (e.g., getting penalized for redundant assays).
+7. If the episode is ending (via `submit`, max steps, or zero budget), compute the terminal `submission_score`.
+8. Return an observation that exposes the visible summary but not the hidden truth.
 
-Editable slots:
+---
 
-- `warhead`
-- `hinge`
-- `solvent_tail`
-- `back_pocket`
+## Typical successful pipeline
+Most scenarios reward a sensible experiment order similar to:
+1. `run_assay` (Assay potency and safety of the baseline molecule).
+2. `edit` (Swap an R-group fragment to improve a weak property).
+3. `run_assay` (Gather new evidence for the modified molecule).
+4. `propose_nomination` (Discuss the findings with the multi-agent review board).
+5. `submit` (Finalize the candidate).
 
-Available tools:
+The exact best sequence depends on the scenario. In `level_2_hard`, the best strategy is often to `restart` the entire scaffold immediately rather than wasting budget on a doomed trajectory.
 
-- `evaluate_properties`
-- `dock_target`
-- `assay_toxicity`
-- `estimate_synthesizability`
-- `evaluate_novelty`
-- `search_literature`
-- `run_md_simulation`
+---
 
-## Observation Space
+## Reward Strategy & Episode termination
 
-`MolForgeObservation` includes:
+MolForge uses two distinct reward settings for different purposes:
 
-- Current scenario metadata and task brief
-- Canonical molecule string plus per-slot fragment assignments
-- Remaining budget and step counts
-- Visible assay results with confidence intervals
-- Role-specific structured observation slices for all specialists
-- Structured message log
-- Governance state showing approvals, objections, and vetoes
-- Constraint status based only on visible evidence
-- Reward breakdown for the last transition
-- Report card on termination
+**1. Training / RL Warmup (`MOLFORGE_REWARD_MODE=curriculum`)**
+- Gives partial credit at the end of an episode even if the model didn't submit, provided it gathered useful evidence. 
+- It actively prevents "reward hacking" by penalizing assay-spamming, and giving massive multipliers to successful submissions.
 
-The hidden state contains the true molecular properties, target-shift logic, whether the current scaffold is a trap series, and the full internal trace used by graders.
+**2. Judge-Facing Evaluation (`MOLFORGE_REWARD_MODE=assay_gated`)**
+- Strict OpenEnv hackathon rules.
+- If the agent does not formally `submit` the candidate, the final score is `0.0`. 
+- No partial credit is given for just gathering evidence.
 
-The observation metadata also includes the RDKit/TDC surrogate SMILES and active oracle backend flags, for example `{"rdkit": true, "tdc": true}` when both engines are available. RDKit is part of the default deploy path. TDC is an optional extra because current PyTDC releases pull a large platform-sensitive ML stack; install with `pip install -e '.[tdc]'` or `uv sync --extra tdc` on a compatible Python if you want TDC SA/QED oracles active.
+An episode ends when one of the following happens:
+- The agent explicitly chooses `submit`.
+- Resources (oracle budget) are exhausted.
+- The environment reaches `MAX_STEPS`.
 
-## Reward Design
+---
 
-The reward function mixes coarse shaping and sparse terminal bonuses:
-
-- Coarse edit feedback that avoids exposing exact hidden objective deltas
-- Information-gain reward for useful assays
-- Coordination reward for correct specialist reviews, proposal discipline, and required review coverage
-- Penalties for invalid actions, repeated states, wasteful assay repetition, missing reviews, and budget burn
-- Evidence penalties for submitting without current potency, toxicity, and synthesis support
-- Proportional constraint penalties so worse toxicity, potency, or synthesis violations hurt more than near misses
-- Large terminal reward for submitting a molecule that beats baseline while satisfying hard constraints and evidence requirements
-- Small budget-efficiency credit for valid evidence-backed submissions, so finishing with unused budget is better than reaching the same candidate wastefully
-
-`final_score` is the single headline scalar for RL/evaluation. It equals strict `submission_score` after a valid formal submission, and gives only small capped partial credit to non-submitted episodes. `candidate_score` and `progress_score` are diagnostic breakdowns only. `progress_score` is deliberately capped by failed constraints, repeated assays, policy-veto loops, and hard-scenario trap failures, so evidence collection alone cannot look like success. `submission_score` remains a formal task-completion score and is `0.0` without a `submit` action.
-
-For early RL, `MOLFORGE_REWARD_MODE=curriculum` adds bounded warmup reward for useful evidence collection, evidence-supported submit decisions, and non-submitted near-miss episodes. It also adds a small missed-nomination penalty when a strong evidence package is ready but the agent lets the deadline pass without submitting. This makes reward curves less sparse for small models, while leaving the official terminal `submission_score` unchanged. Final judge-facing evaluation should still report strict `submission_score` in the default `assay_gated` mode.
-
-This keeps the environment informative for training while making exploitation visible in the logs.
-
-For SFT/RL training guidance, trace generation, randomization flags, and reward-hacking precautions, see [TRAINING_INSTRUCTIONS.md](TRAINING_INSTRUCTIONS.md).
-
-For the judge-rerunnable RL evidence workflow, use [issue/molforge_grpo_colab_training.ipynb](issue/molforge_grpo_colab_training.ipynb) or the underlying TRL/OpenEnv tool-loop script [issue/qwen3_5_2b_unsloth_grpo_openenv_tools.py](issue/qwen3_5_2b_unsloth_grpo_openenv_tools.py). The run writes reward/loss curves, before/after evaluator JSON, tool-rollout logs, and trained adapters to Google Drive; see [RL_TRAINING_COLAB.md](RL_TRAINING_COLAB.md).
-
-## Multi-Agent Workflow
-
-Each environment step represents one coordinated team decision:
-
-1. The acting specialist proposes an executable action.
-2. Other required reviewers send typed messages.
-3. Governance checks permissions, review coverage, and hard-veto conditions.
-4. The environment either executes the action or blocks it with a policy veto.
-
-The specialists do not call each other through separate API turns. A single `MolForgeAction` contains the executable team action plus a typed message bundle. The environment grades that bundle by checking that the acting role made a proposal, required non-acting reviewers responded with the expected message type, and no role used a message it is not allowed to send. Missing reviewers lower both transition reward and terminal `coordination_score`.
-
-Hard-veto behavior currently covers:
-
-- Toxicologist safety vetoes
-- Assay Planner budget/evidence vetoes
-- Process Chemist feasibility vetoes on hard synth constraints
-
-## Project Layout
-
-- Core models: [models.py](models.py)
-  Typed action, observation, state, assay, and governance schemas.
-- Scenario definitions: [scenarios.py](scenarios.py)
-  Fragment libraries, budgets, task configs, molecule scoring, and deterministic graders.
-- Client wrapper: [client.py](client.py)
-  Thin OpenEnv client for interacting with the environment.
-- Environment entrypoint: [server/molforge_environment.py](server/molforge_environment.py)
-  Small orchestration class that wires the focused server mixins together.
-- Shared environment utilities: [server/shared.py](server/shared.py)
-  Reusable constants, state helpers, assay merging, score normalization, and trace utilities.
-- Action execution: [server/actions.py](server/actions.py)
-  Edit, assay, submit, restart, and transition-reward logic.
-- Governance logic: [server/governance.py](server/governance.py)
-  Action validation, reviewer expectations, vetoes, and visible reasoning-grounding checks.
-- Observation and grading: [server/views.py](server/views.py)
-  Observation assembly, role-specific views, report cards, and terminal graders.
-- OpenEnv app: [server/app.py](server/app.py)
-  FastAPI/OpenEnv server bootstrap.
-- Shared inference helpers: [inference_common.py](inference_common.py)
-  Common prompts, JSON extraction, prompt payload shaping, and heuristic team policy.
-- Judge runner: [inference.py](inference.py)
-  Official OpenAI-client baseline used for validator-style execution.
-- Local runner: [local_inference.py](local_inference.py)
-  Ollama-native development script that fails loudly when the local model cannot emit a valid action.
-- Submission manifests: [openenv.yaml](openenv.yaml), [Dockerfile](Dockerfile), [server/Dockerfile](server/Dockerfile)
-
-## Setup
-
+## Installation & Usage
+The package requires Python ≥ 3.10.
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
+pip install "openenv-core[core]>=0.2.3" pydantic transformers trl peft datasets
 ```
 
-Run the server locally:
+### 1. In-process environment
+Use `MolForgeEnvironment` when you want direct Python access with full structured observations:
+```python
+from models import MolForgeAction
+from server.molforge_environment import MolForgeEnvironment
 
-```bash
-uvicorn server.app:app --host 0.0.0.0 --port 8000
+env = MolForgeEnvironment()
+obs = env.reset()
+
+action = MolForgeAction(
+    action_type="run_assay",
+    acting_role="Lead Chemist",
+    tool_name="potency_oracle",
+    rationale="Need to gather baseline potency evidence."
+)
+obs = env.step(action)
+print(obs.reward)
+print(obs.last_transition_summary)
 ```
 
-Validate the environment:
-
-```bash
-openenv validate
-```
-
-## Baseline Inference
-
-The required judge-facing baseline script lives at [inference.py](inference.py) and uses the OpenAI Python client with these environment variables:
-
-- `API_BASE_URL`
-- `MODEL_NAME`
-- `HF_TOKEN`
-
-If those variables are unavailable or the model request fails, the script exits with an error. There is no heuristic fallback in the judge-facing runner.
-
-Run it with:
-
-```bash
-API_BASE_URL=https://router.huggingface.co/v1 \
-MODEL_NAME=your-model \
-HF_TOKEN=your-token \
-python inference.py
-```
-
-## Local Testing
-
-For local Ollama testing, use [local_inference.py](local_inference.py) instead of `inference.py`.
-
-This local script:
-
-- talks to Ollama's native `/api/chat` endpoint
-- supports `think: false` for reasoning models
-- fails loudly when the local model cannot produce parseable action JSON
-- keeps the judge-facing script clean and spec-aligned
-
-Run it with:
-
-```bash
-OLLAMA_BASE_URL=http://localhost:11434 \
-LOCAL_MODEL_NAME=gemma4:e2b \
-OLLAMA_THINK=false \
-python local_inference.py
-```
-
-Reference offline smoke-test baseline from the deterministic trace policy used only for SFT data generation. This is not a model score and should not be reported as frontier-model performance:
-
-- `level_0_easy`: `0.8703`
-- `level_1_medium`: `0.8733`
-- `level_2_hard`: `0.8883`
-- Average final/submission score: `0.8773`
-
-## Deployment
-
-The environment is packaged as a FastAPI OpenEnv Space using the repo-root [Dockerfile](Dockerfile) for validator compatibility, with [server/Dockerfile](server/Dockerfile) retained for OpenEnv-style server packaging. The root manifest is [openenv.yaml](openenv.yaml), so `openenv push` or a Docker Hugging Face Space can deploy it.
-
-## Pre-RL SFT Adapter
-
-The current Qwen3.5 2B QLoRA/SFT v4 adapter is stored in the Hugging Face Space at `adapters/qwen3_5_2b_lora_adapters_compact_v4/`. It is intentionally excluded from the Docker build context so the OpenEnv server stays lightweight, but the adapter files remain available from the Space repository for model debugging.
-
-Before RL, that adapter produced these strict MolForge `final_score` values:
-
-- `level_0_easy`: `0.1167`
-- `level_1_medium`: `0.1167`
-- `level_2_hard`: `0.0800`
+### 2. RL Training Notebook
+We have provided a cleanly documented `issue/molforge_grpo_official_submission.ipynb` which demonstrates exactly how to fine-tune a Qwen3.5 model using TRL's GRPO trainer natively against this OpenEnv environment.
