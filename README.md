@@ -13,8 +13,9 @@ This repository implements an OpenEnv-compatible reinforcement learning environm
 
 The environment is designed as a **partially observable Markov decision process (POMDP)** with:
 - hidden ground-truth molecular properties and scenario constraints
-- hidden target mutation traps
+- hidden target mutation traps (e.g. KRAS resistance panel shifts)
 - visible task metadata, team communication, assay results, and remaining budget
+- simulated `RDKit` descriptors and `TDC` (Therapeutics Data Commons) predictions (QED, SA_Score, LogP, TPSA)
 - dense step-wise reward (in curriculum mode) plus terminal reward for submission quality
 
 At a high level, each episode looks like this:
@@ -68,9 +69,9 @@ This is where episodes come from. It defines a curated library of three biologic
 
 ### `server/actions.py` & `server/governance.py`
 The rule engines enforcing scientific and procedural constraints before each action is applied:
-- `run_assay`: Costs budget. Evaluates the current molecule using TDC Oracles and RDKit logic.
-- `edit`: Replaces a specific R-group slot with a new fragment from the fragment library. Clears previously gathered evidence.
-- `submit`: Ends the episode. Triggers the final evaluation grader. 
+- `run_assay`: Costs budget. Assembles the fragments into a valid `SMILES` string and evaluates the current molecule using `TDC` Oracles and `RDKit` logic (e.g. `MolLogP`, `TPSA`, `NumRotatableBonds`, `QED`).
+- `edit`: Replaces a specific R-group slot (`warhead`, `hinge`, `solvent_tail`, `back_pocket`) with a new chemical fragment (e.g. `acrylamide`, `fluorophenyl`, `morpholine`). Clears previously gathered evidence.
+- `submit`: Ends the episode. Triggers the final evaluation grader against the scenario's strict hard constraints (`potency_min`, `toxicity_max`, `synth_min`). 
 - **Governance**: Certain actions require multi-agent consensus. If the `Lead Chemist` tries to submit without the `Safety Specialist`'s approval, the action is vetoed.
 
 ### `server/molforge_environment.py`
