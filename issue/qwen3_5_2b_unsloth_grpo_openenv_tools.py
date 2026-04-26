@@ -50,14 +50,36 @@ os.environ.setdefault("MOLFORGE_TRAINING_RANDOMIZATION", "1")
 os.environ.pop("MOLFORGE_DEBUG_STATE", None)
 
 if Path("/content").exists() and not Path("/kaggle/working").exists():
-    try:
-        from google.colab import drive
+    if not Path("/content/drive/MyDrive").exists():
+        try:
+            from google.colab import drive
 
-        drive.mount("/content/drive")
-    except Exception as exc:
-        print(f"Skipping Google Drive mount: {exc}")
+            drive.mount("/content/drive")
+        except Exception as exc:
+            print(f"Skipping Google Drive mount: {exc}")
+
+# ── Pre-import fix: install mergekit WITHOUT its deps ──────────────
+# TRL internally imports mergekit for model-merging callbacks, but we
+# don't use merging.  mergekit's pydantic constraint (<2.11) conflicts
+# with openenv-core's fastmcp (>=2.11.7).  Installing --no-deps makes
+# the module importable without pulling in the conflicting pydantic pin.
+try:
+    import mergekit  # noqa: F401
+except ImportError:
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "mergekit", "--no-deps", "-q"],
+    )
 
 import torch  # noqa: E402
+
+try:
+    from unsloth import FastLanguageModel, is_bfloat16_supported  # noqa: E402
+except Exception:  # pragma: no cover
+    FastLanguageModel = None
+
+    def is_bfloat16_supported() -> bool:
+        return False
+
 from datasets import Dataset  # noqa: E402
 from peft import PeftModel  # noqa: E402
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback  # noqa: E402
@@ -67,14 +89,6 @@ try:
     from trl import RichProgressCallback  # noqa: E402
 except Exception:  # pragma: no cover
     RichProgressCallback = None
-
-try:
-    from unsloth import FastLanguageModel, is_bfloat16_supported  # noqa: E402
-except Exception:  # pragma: no cover
-    FastLanguageModel = None
-
-    def is_bfloat16_supported() -> bool:
-        return False
 
 from inference_common import attach_reasoning_fields, attach_team_messages  # noqa: E402
 from models import MolForgeAction  # noqa: E402

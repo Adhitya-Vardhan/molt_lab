@@ -8,28 +8,38 @@ This file tracks the remote RL training attempts for the MolForge OpenEnv GRPO r
 | --- | --- | --- | --- |
 | `69ed7260d70108f37acdf4b8` | `a100-large` | Canceled | Stayed in `SCHEDULING`, so we canceled it before it used GPU time. |
 | `69ed73d3d70108f37acdf4e1` | `l40sx1` | Failed | Started but exited during Python import before model load or training. |
-| `69ed74f6d70108f37acdf504` | `l40sx1` | Running/scheduling | Smoke retry with `mergekit`, shorter completion length, fewer steps, and before/after eval skipped. |
+| `69ed74f6d70108f37acdf504` | `l40sx1` | **Failed** | `--with mergekit` caused unsolvable pydantic conflict with `openenv-core`. |
+| `69ed7be5d2c8bd8662bcef00` | `l40sx1` | Canceled | Incorrect CLI usage (missing image name). |
+| `69ed9440d70108f37acdf83b` | `l40sx1` | Failed | `uv run` couldn't find the script path `issue/script.py`. |
+| `69ed94add2c8bd8662bcf215` | `l40sx1` | Submitted | Fixed script path to just filename and used explicit `python` call. |
 
-## Current Failure
+## Failure History
 
-The `l40sx1` job failed before training started:
+### Job 2 (`69ed73d3`) — `ModuleNotFoundError: No module named 'mergekit'`
 
-```text
-RuntimeError: Failed to import trl.trainer.grpo_trainer ...
-ModuleNotFoundError: No module named 'mergekit'
-```
+TRL internally imports `mergekit` for GRPO model-merging callbacks even though we don't use merging. The fix was to add `--with mergekit`.
 
-This is a dependency issue in the HF Jobs environment. Recent TRL imports GRPO callbacks that import `mergekit`, even though we are not explicitly merging models in our script.
+### Job 3 (`69ed74f6`) — **pydantic version conflict** (CURRENT)
+
+Adding `--with mergekit` broke the resolver:
+
+- `mergekit` (all versions) requires `pydantic < 2.11`
+- `openenv-core==0.2.3` → `fastmcp>=3.0.0` → `pydantic >= 2.11.7`
+
+**No version of pydantic satisfies both.** uv correctly refuses to resolve.
 
 ## Fix
 
-Include `mergekit` in the HF Jobs and Colab dependency list:
+**Do NOT pass `--with mergekit`** in the HF Jobs command. Instead, the script now installs mergekit at runtime with `--no-deps` before importing TRL:
 
-```bash
---with mergekit
+```python
+try:
+    import mergekit
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "mergekit", "--no-deps", "-q"])
 ```
 
-The Colab notebook setup command now includes `mergekit`.
+This makes `mergekit` importable (satisfying TRL) without pulling in its conflicting pydantic constraint.
 
 ## Checkpoint and Artifact Persistence
 
@@ -45,14 +55,11 @@ It also writes logs, metrics, plots, before/after evaluator JSON, and a zip arch
 hf://datasets/Adhitya122/molforge-rl-runs/<run_name>
 ```
 
-For the failed `l40sx1` run, no checkpoint was created because the script failed at import time before it reached model loading.
-
 ## Safer Next Runs
 
-Recommended next HF Jobs command changes:
+Recommended next HF Jobs command (NO `--with mergekit`):
 
 ```bash
---with mergekit
 --env RL_MAX_STEPS=20
 --env RL_DATASET_SIZE=30
 --env MAX_COMPLETION_LENGTH=1024
