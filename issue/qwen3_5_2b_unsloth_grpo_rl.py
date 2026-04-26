@@ -309,6 +309,18 @@ def evaluate_completion(record: dict[str, Any], completion_text: str) -> tuple[f
     components = {component.name: component.value for component in next_observation.reward_breakdown}
     reward = float(next_observation.reward)
 
+    # --- ANTI-REWARD-HACKING SHAPING ---
+    if action.action_type == "run_assay" and reward > 0:
+        # Nerf assay farming so the model doesn't just spam it for safe points
+        reward *= 0.25
+    elif action.action_type == "submit":
+        # Massive multiplier for submitting good candidates to outweigh the risk
+        sub_score = float(grader_scores.get("submission_score", 0.0))
+        if sub_score > 0.0:
+            reward += sub_score * 3.0
+    elif action.action_type == "edit" and reward > 0:
+        # Boost successful edits to encourage exploration instead of freezing
+        reward *= 1.5
     diagnostics.update(
         {
             "action_type": action.action_type,
