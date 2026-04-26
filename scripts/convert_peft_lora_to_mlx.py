@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path
 
 import mlx.core as mx
-from safetensors.torch import safe_open
+from safetensors import safe_open
 
 
 KEY_RE = re.compile(
@@ -37,7 +37,7 @@ def main() -> None:
     weights = {}
     layer_ids = set()
     module_keys = set()
-    with safe_open(peft_path / "adapter_model.safetensors", framework="pt", device="cpu") as handle:
+    with safe_open(peft_path / "adapter_model.safetensors", framework="numpy") as handle:
         for key in handle.keys():
             match = KEY_RE.match(key)
             if not match:
@@ -47,7 +47,7 @@ def main() -> None:
             ab = match.group("ab")
             layer_ids.add(layer)
             module_keys.add(module)
-            tensor = handle.get_tensor(key).detach().cpu().numpy()
+            tensor = handle.get_tensor(key)
             mlx_key = f"language_model.model.layers.{layer}.{module}.lora_{ab.lower()}"
             weights[mlx_key] = mx.array(tensor.T)
 
