@@ -76,11 +76,6 @@ if Path("/content").exists() and not Path("/kaggle/working").exists():
     except Exception as exc:
         print(f"Skipping Google Drive mount: {exc}")
 
-from datasets import Dataset  # noqa: E402
-from peft import PeftModel  # noqa: E402
-from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback  # noqa: E402
-from trl import GRPOConfig, GRPOTrainer  # noqa: E402
-
 try:
     from unsloth import FastLanguageModel, is_bfloat16_supported  # noqa: E402
 except Exception:  # pragma: no cover - script can fall back to Transformers.
@@ -88,6 +83,11 @@ except Exception:  # pragma: no cover - script can fall back to Transformers.
 
     def is_bfloat16_supported() -> bool:
         return False
+
+from datasets import Dataset  # noqa: E402
+from peft import PeftModel  # noqa: E402
+from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback  # noqa: E402
+from trl import GRPOConfig, GRPOTrainer  # noqa: E402
 
 from inference_common import (  # noqa: E402
     MolForgeAction,
@@ -383,6 +383,8 @@ def load_model_and_tokenizer():
                 load_in_4bit=True,
             )
             FastLanguageModel.for_training(model)
+            if hasattr(tokenizer, "tokenizer"):
+                tokenizer = tokenizer.tokenizer
             return model, tokenizer
         except Exception as exc:
             print(f"Unsloth adapter load failed, falling back to Transformers+PEFT: {exc}")
@@ -395,6 +397,8 @@ def load_model_and_tokenizer():
         trust_remote_code=True,
     )
     model = PeftModel.from_pretrained(base, SFT_ADAPTER_PATH, is_trainable=True)
+    if hasattr(tokenizer, "tokenizer"):
+        tokenizer = tokenizer.tokenizer
     return model, tokenizer
 
 
