@@ -102,6 +102,8 @@ LOG_DIR = OUTPUT_DIR / "logs"
 PLOT_DIR = OUTPUT_DIR / "plots"
 ADAPTER_SAVE_DIR = OUTPUT_DIR / "adapters"
 DRIVE_OUTPUT_DIR = os.getenv("DRIVE_OUTPUT_DIR", "")
+HF_OUTPUT_REPO = os.getenv("HF_OUTPUT_REPO", "")
+HF_OUTPUT_REPO_TYPE = os.getenv("HF_OUTPUT_REPO_TYPE", "dataset")
 
 for path in [OUTPUT_DIR, LOG_DIR, PLOT_DIR, ADAPTER_SAVE_DIR]:
     path.mkdir(parents=True, exist_ok=True)
@@ -659,6 +661,26 @@ def copy_outputs_to_drive() -> None:
     print(f"Copied RL outputs to {destination}")
 
 
+def upload_outputs_to_hub() -> None:
+    if not HF_OUTPUT_REPO:
+        return
+    try:
+        from huggingface_hub import HfApi
+
+        api = HfApi()
+        api.create_repo(HF_OUTPUT_REPO, repo_type=HF_OUTPUT_REPO_TYPE, exist_ok=True)
+        api.upload_folder(
+            repo_id=HF_OUTPUT_REPO,
+            repo_type=HF_OUTPUT_REPO_TYPE,
+            folder_path=str(OUTPUT_DIR),
+            path_in_repo=RUN_NAME,
+            commit_message=f"Upload MolForge OpenEnv GRPO run {RUN_NAME}",
+        )
+        print(f"Uploaded RL outputs to hf://{HF_OUTPUT_REPO_TYPE}s/{HF_OUTPUT_REPO}/{RUN_NAME}")
+    except Exception as exc:
+        print(f"HF output upload failed: {exc}")
+
+
 def zip_outputs() -> Path:
     return Path(shutil.make_archive(str(OUTPUT_ROOT / RUN_NAME), "zip", OUTPUT_DIR))
 
@@ -712,6 +734,7 @@ def main() -> None:
     write_summary_and_plots()
     archive = zip_outputs()
     copy_outputs_to_drive()
+    upload_outputs_to_hub()
     print(f"Saved OpenEnv RL run to {OUTPUT_DIR}")
     print(f"Saved zip archive to {archive}")
 
