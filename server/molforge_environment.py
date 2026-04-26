@@ -74,6 +74,8 @@ class MolForgeEnvironment(
             vetoes=[],
             executable=True,
         )
+        self.reset()
+        self._reset_index = -1
 
     def reset(self) -> MolForgeObservation:
         """Start a new scenario in a deterministic rotation."""

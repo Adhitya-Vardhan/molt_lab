@@ -1,3 +1,20 @@
+---
+title: "MolForge: Verifier-Driven RL for Drug Discovery"
+emoji: 🧬
+colorFrom: indigo
+colorTo: blue
+sdk: static
+pinned: false
+license: mit
+tags:
+- reinforcement-learning
+- drug-discovery
+- chemistry
+- multi-agent
+- oncology
+- molecular-simulation
+- openenv
+---
 
 # MolForge: Verifier-Driven RL for Drug Discovery
 
@@ -76,8 +93,6 @@ The training pipeline has two stages:
 1. **SFT warm start**
 2. **RL with verifier rewards**
 
-**[Try the RL Training Notebook on Google Colab](https://colab.research.google.com/drive/1c6npGkGNbbbd8XFNeS6zInBpopLnJ4W4?usp=sharing)**
-
 ### Base model
 
 The model used for the main run is:
@@ -113,78 +128,6 @@ After SFT, the policy is trained with GRPO-style RL against MolForge itself. Dur
 | **Hard** | 0.0800 | 0.0866 | **+8.3%** |
 
 As shown in the reward curve and logs, the model successfully learns to navigate the scientific constraints, moving from early exploration to consistent, verifier-backed molecule submissions. For strict evaluation, the environment switches back to `assay_gated` mode.
-
-## Current Benchmark Scenarios
-
-| Scenario | Difficulty | Target | Story | Budget | Max steps |
-| --- | --- | --- | --- | ---: | ---: |
-| `level_0_easy` | easy | KRAS G12C | A near-viable scaffold needs safety repair and current assay evidence. | 3600 | 7 |
-| `level_1_medium` | medium | KRAS G12C | Potency, toxicity, and synthesis must be balanced under budget pressure. | 4300 | 8 |
-| `level_2_hard` | hard | KRAS G12C resistance panel | The starting series is a sunk-cost trap and the target pocket shifts late. | 5200 | 9 |
-
-The hard scenario is designed to punish blind local optimization. A model that keeps improving the wrong scaffold can look productive early and still fail later. A stronger policy learns when to restart, re-assay, and rebuild evidence after the target shift.
-
-## Molecular Search Space
-
-The molecule is represented as four editable slots:
-
-| Slot | Options |
-| --- | --- |
-| `warhead` | `acrylamide`, `reversible_cyanoacrylamide`, `nitrile`, `vinyl_sulfonamide` |
-| `hinge` | `azaindole`, `pyridine`, `fluorophenyl`, `quinazoline` |
-| `solvent_tail` | `morpholine`, `piperazine`, `cyclopropyl`, `dimethylamino` |
-| `back_pocket` | `methoxy`, `chloro`, `trifluoromethyl`, `cyano` |
-
-That creates:
-
-```text
-4 warheads x 4 hinges x 4 tails x 4 back-pocket groups = 256 molecule combinations
-```
-
-Training does not ask the model to memorize a fixed list of molecules. The environment starts from three different scenario scaffolds, and the model dynamically explores this 256-combination molecular space by choosing edits and assays.
-
-## Tools and Assay Costs
-
-| Tool | Cost | Signal |
-| --- | ---: | --- |
-| `evaluate_properties` | 50 | Fast potency and novelty estimate |
-| `evaluate_novelty` | 80 | Novelty-focused reading |
-| `search_literature` | 100 | Fragment literature hints |
-| `estimate_synthesizability` | 120 | Synthesis feasibility estimate |
-| `dock_target` | 300 | Docking-style potency signal |
-| `assay_toxicity` | 2000 | Direct toxicity estimate |
-| `run_md_simulation` | 2500 | Expensive potency, toxicity, and synthesis evidence |
-
-## Repository Map
-
-| File | Purpose |
-| --- | --- |
-| `models.py` | Pydantic action, observation, state, message, assay, and reward contracts |
-| `scenarios.py` | fragment library, scenario configs, molecule scoring, constraints, and verifier status |
-| `server/molforge_environment.py` | environment orchestration for `reset`, `step`, and `state` |
-| `server/actions.py` | execution logic for edit, assay, submit, restart, and defer |
-| `server/governance.py` | validation, role permissions, specialist reviews, and veto logic |
-| `server/views.py` | observation construction, role views, report cards, and grader scores |
-| `server/app.py` | FastAPI/OpenEnv server entrypoint |
-| `inference.py` | judge-facing baseline inference script |
-| `openenv.yaml` | OpenEnv metadata and app entrypoint |
-| `Dockerfile` | Docker build for the Hugging Face/OpenEnv server |
-
-## Running Locally
-
-```bash
-docker build -t molforge .
-docker run -p 8000:8000 molforge
-```
-
-OpenEnv endpoints:
-
-- `GET /health`
-- `POST /reset`
-- `POST /step`
-- `GET /state`
-- `GET /schema`
-- `GET /openapi.json`
 
 
 

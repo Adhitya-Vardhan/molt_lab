@@ -45,3 +45,4 @@ data/*.jsonl
 issue/molforge_sft_compact_policy_v3.jsonl
 qwen3_5_2b_unsloth_sft.py
 analysis_results.md
+scratch/
