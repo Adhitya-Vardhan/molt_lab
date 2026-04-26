@@ -6,7 +6,11 @@ MolForge is a reinforcement learning environment that simulates a **medical onco
 **[View the MolForge Space Deployment on Hugging Face](https://huggingface.co/spaces/Adhitya122/molforge)**  
 **[Try the RL Training Notebook on Google Colab](https://colab.research.google.com/drive/1c6npGkGNbbbd8XFNeS6zInBpopLnJ4W4?usp=sharing)**
 
+### 🎥 Explainer Video
+[![MolForge Explainer Video](https://img.youtube.com/vi/q8YoA0YhIn8/0.jpg)](https://youtu.be/q8YoA0YhIn8)
+
 ### The Scientific Method as a Workflow
+
 
 Imagine a biotech team tasked with optimizing a lead candidate for **KRAS G12C** (including a high-difficulty resistance panel). The model doesn't just "write" a molecule; it controls a specialist team that must navigate a resource-constrained laboratory:
 
