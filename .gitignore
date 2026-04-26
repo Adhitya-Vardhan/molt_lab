@@ -1,5 +1,11 @@
 # macOS / editor noise
 .DS_Store
+
+# Output runs
+molforge_rl_runs/
+molforge_grpo_*/
+*.egg-info/
+
 *.swp
 *.swo
 
