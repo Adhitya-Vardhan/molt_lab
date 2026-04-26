@@ -94,6 +94,8 @@ LOGGING_STEPS = int(os.getenv("RL_LOGGING_STEPS", "1"))
 SAVE_STEPS = int(os.getenv("RL_SAVE_STEPS", "25"))
 SEED = int(os.getenv("RL_SEED", "3407"))
 USE_UNSLOTH = os.getenv("USE_UNSLOTH", "true").lower() in {"1", "true", "yes"}
+RUN_BEFORE_EVAL = os.getenv("RUN_BEFORE_EVAL", "true").lower() in {"1", "true", "yes"}
+RUN_AFTER_EVAL = os.getenv("RUN_AFTER_EVAL", "true").lower() in {"1", "true", "yes"}
 RUN_NAME = os.getenv("RUN_NAME", time.strftime("molforge_openenv_grpo_%Y%m%d_%H%M%S"))
 DEFAULT_OUTPUT_ROOT = "/content/molforge_rl_runs" if Path("/content").exists() else "/kaggle/working/molforge_rl_runs"
 OUTPUT_ROOT = Path(os.getenv("RL_OUTPUT_ROOT", DEFAULT_OUTPUT_ROOT))
@@ -700,6 +702,8 @@ def main() -> None:
         "gradient_accumulation": GRAD_ACCUM,
         "learning_rate": LEARNING_RATE,
         "max_completion_length": MAX_COMPLETION_LENGTH,
+        "run_before_eval": RUN_BEFORE_EVAL,
+        "run_after_eval": RUN_AFTER_EVAL,
         "drive_output_dir": DRIVE_OUTPUT_DIR,
     }
     (OUTPUT_DIR / "run_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -710,8 +714,14 @@ def main() -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    before = evaluate_json_policy_rollouts(model, tokenizer, EVAL_BEFORE_JSON, "before_rl")
-    print("Before-RL evaluator:", json.dumps(before, indent=2)[:3000])
+    if RUN_BEFORE_EVAL:
+        before = evaluate_json_policy_rollouts(model, tokenizer, EVAL_BEFORE_JSON, "before_rl")
+        print("Before-RL evaluator:", json.dumps(before, indent=2)[:3000])
+    else:
+        EVAL_BEFORE_JSON.write_text(
+            json.dumps({"label": "before_rl", "skipped": True, "reason": "RUN_BEFORE_EVAL=false"}, indent=2),
+            encoding="utf-8",
+        )
 
     callbacks = [JsonMetricsCallback()]
     if RichProgressCallback is not None:
@@ -725,18 +735,25 @@ def main() -> None:
         environment_factory=MolForgeToolEnv,
         callbacks=callbacks,
     )
-    trainer.train()
-
-    trainer.save_model(str(ADAPTER_SAVE_DIR))
-    tokenizer.save_pretrained(str(ADAPTER_SAVE_DIR))
-    after = evaluate_json_policy_rollouts(model, tokenizer, EVAL_AFTER_JSON, "after_rl")
-    print("After-RL evaluator:", json.dumps(after, indent=2)[:3000])
-    write_summary_and_plots()
-    archive = zip_outputs()
-    copy_outputs_to_drive()
-    upload_outputs_to_hub()
-    print(f"Saved OpenEnv RL run to {OUTPUT_DIR}")
-    print(f"Saved zip archive to {archive}")
+    try:
+        trainer.train()
+        trainer.save_model(str(ADAPTER_SAVE_DIR))
+        tokenizer.save_pretrained(str(ADAPTER_SAVE_DIR))
+        if RUN_AFTER_EVAL:
+            after = evaluate_json_policy_rollouts(model, tokenizer, EVAL_AFTER_JSON, "after_rl")
+            print("After-RL evaluator:", json.dumps(after, indent=2)[:3000])
+        else:
+            EVAL_AFTER_JSON.write_text(
+                json.dumps({"label": "after_rl", "skipped": True, "reason": "RUN_AFTER_EVAL=false"}, indent=2),
+                encoding="utf-8",
+            )
+    finally:
+        write_summary_and_plots()
+        archive = zip_outputs()
+        copy_outputs_to_drive()
+        upload_outputs_to_hub()
+        print(f"Saved OpenEnv RL run to {OUTPUT_DIR}")
+        print(f"Saved zip archive to {archive}")
 
 
 if __name__ == "__main__":

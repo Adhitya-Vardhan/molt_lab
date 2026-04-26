@@ -38,6 +38,8 @@ os.environ["RL_LEARNING_RATE"] = "2e-6"
 For a stronger run, try `RL_MAX_STEPS=200` and `NUM_GENERATIONS=4` on H100.
 If Colab runs out of memory, reduce `MAX_COMPLETION_LENGTH` to `1024`; keep `RL_BATCH_SIZE` divisible by `NUM_GENERATIONS`.
 
+If TRL fails during import with `No module named 'mergekit'`, install `mergekit` in the same setup cell as `trl`.
+
 ## What to Show Judges
 
 Use the before/after rollout JSON plus these plots:
