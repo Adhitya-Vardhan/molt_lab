@@ -376,6 +376,10 @@ def load_model_and_tokenizer():
                 load_in_4bit=True,
             )
             FastLanguageModel.for_training(model)
+            
+            if hasattr(tokenizer, "tokenizer"):
+                tokenizer = tokenizer.tokenizer
+                
             return model, tokenizer
         except Exception as exc:
             print(f"Unsloth adapter load failed, falling back to Transformers+PEFT: {exc}")
@@ -388,6 +392,10 @@ def load_model_and_tokenizer():
         trust_remote_code=True,
     )
     model = PeftModel.from_pretrained(base, SFT_ADAPTER_PATH, is_trainable=True)
+    
+    if hasattr(tokenizer, "tokenizer"):
+        tokenizer = tokenizer.tokenizer
+        
     return model, tokenizer
 
 
