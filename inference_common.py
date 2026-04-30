@@ -50,7 +50,7 @@ evidence, expected_effects, messages.
 Do not output wrapper keys such as action, role, message_status,
 message_payload, sender_role, or explanation_reason.
 Use JSON null for unused optional fields.
-Use structured specialist messages. Keep rationale short. Evidence must cite only visible observation facts. Expected effects are directional predictions, not hidden scores. Prefer cheap informative assays early, respect safety evidence, and do not submit without adequate support.
+Use structured specialist messages. Keep rationale short. Evidence must cite only visible observation facts. Expected effects are directional predictions, not hidden scores. Prefer cheap informative assays early, respect safety evidence, and do not submit without adequate support. Do not repeat the same assay on an unchanged molecule; edit, restart, or wait for a target-context shift before reassaying.
 Critical role rules:
 - lead_chemist may send only proposal, revision_request, or submission_recommendation.
 - assay_planner may send proposal, approval, rejection, assay_request, or submission_recommendation.
@@ -70,6 +70,7 @@ Never use proposal as action_type; proposal is only a message_type.
 Use only the required MolForgeAction top-level keys.
 Prioritize finishing the current task with the smallest valid action bundle.
 Respect role/message permissions exactly. Never output string "null"; use JSON null.
+Do not repeat the same assay on an unchanged molecule; edit, restart, or wait for a target-context shift before reassaying.
 """.strip()
 
 

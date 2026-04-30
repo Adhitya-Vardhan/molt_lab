@@ -1,6 +1,14 @@
 import random
+import sys
+from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from inference_common import attach_reasoning_fields, attach_team_messages
 from molforge.scenarios import SCENARIOS, build_scenario_variant, molecule_diagnostics
+from molforge.models import MolForgeAction
 from molforge.server.molforge_environment import MolForgeEnvironment
 
 
@@ -66,3 +74,36 @@ def test_holdout_environment_surfaces_variant_metadata(monkeypatch):
     assert variant["is_randomized"] is True
     assert obs.metadata["chemical_diagnostics"]["available"] is True
     assert "chemical_quality" in obs.visible_metrics
+
+
+def test_redundant_assay_on_unchanged_molecule_is_rejected():
+    env = MolForgeEnvironment()
+    observation = env.reset()
+
+    first = MolForgeAction(
+        action_type="run_assay",
+        acting_role="assay_planner",
+        tool_name="dock_target",
+        rationale="Collect a potency readout.",
+        evidence=[],
+        expected_effects={},
+        messages=[],
+    )
+    first = attach_team_messages(observation, attach_reasoning_fields(observation, first))
+    observation = env.step(first)
+
+    second = MolForgeAction(
+        action_type="run_assay",
+        acting_role="assay_planner",
+        tool_name="dock_target",
+        rationale="Try the same assay again without changing the molecule.",
+        evidence=[],
+        expected_effects={},
+        messages=[],
+    )
+    second = attach_team_messages(observation, attach_reasoning_fields(observation, second))
+    repeated = env.step(second)
+
+    assert repeated.governance.status == "needs_revision"
+    assert repeated.reward < 0
+    assert repeated.last_transition_summary.startswith("dock_target has already been run")

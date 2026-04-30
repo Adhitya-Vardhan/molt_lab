@@ -101,7 +101,7 @@ class MolForgeSharedMixin:
 
     def _estimate_information_gain(self, tool_name: str) -> float:
         current_signature = self._molecule_signature()
-        prior_runs = self._assay_runs.get(f"{current_signature}::{tool_name}", 0)
+        prior_runs = self._assay_runs.get(self._assay_context_key(tool_name, current_signature), 0)
         base = {
             "evaluate_properties": 0.7,
             "dock_target": 0.62,
@@ -113,6 +113,17 @@ class MolForgeSharedMixin:
         }.get(tool_name, 0.25)
         decay = 0.4**prior_runs
         return round(base * decay, 4)
+
+    def _assay_context_key(
+        self,
+        tool_name: str,
+        molecule_signature: Optional[str] = None,
+    ) -> str:
+        signature = molecule_signature or self._molecule_signature()
+        phase = "post_shift" if self._target_shift_active() else "pre_shift"
+        if not self._scenario.target_shift_step:
+            phase = "default"
+        return f"{signature}::{tool_name}::{phase}"
 
     def _simulate_action_properties(self, action: MolForgeAction) -> Dict[str, float]:
         if action.action_type == "edit" and action.slot:

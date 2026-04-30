@@ -45,6 +45,7 @@ class ScenarioConfig:
     enabled_roles: List[str] = field(default_factory=list)
     required_review_roles: List[str] = field(default_factory=list)
     max_messages_per_turn: int = 4
+    max_assay_runs_per_molecule_tool: int = 1
     baseline_to_beat: float = 0.5
     scenario_family: str = ""
     variant_kind: str = "canonical"
@@ -400,6 +401,7 @@ def build_scenario_variant(
         enabled_roles=list(base.enabled_roles),
         required_review_roles=list(base.required_review_roles),
         max_messages_per_turn=base.max_messages_per_turn,
+        max_assay_runs_per_molecule_tool=base.max_assay_runs_per_molecule_tool,
         baseline_to_beat=min(max(base.baseline_to_beat + baseline_shift, 0.45), 0.92),
     )
 

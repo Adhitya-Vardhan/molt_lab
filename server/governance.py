@@ -75,6 +75,16 @@ class MolForgeGovernanceMixin:
                 return "MISSING_TOOL_NAME", "run_assay actions require a tool_name."
             if action.tool_name not in self._scenario.enabled_tools:
                 return "TOOL_DISABLED", f"{action.tool_name} is not enabled for this scenario."
+            assay_key = self._assay_context_key(action.tool_name)
+            prior_runs = self._assay_runs.get(assay_key, 0)
+            if prior_runs >= self._scenario.max_assay_runs_per_molecule_tool:
+                return (
+                    "REDUNDANT_ASSAY",
+                    (
+                        f"{action.tool_name} has already been run on the current molecule in the current context. "
+                        "Edit, restart, or wait for a target shift before repeating that assay."
+                    ),
+                )
             cost = DEFAULT_TOOL_COSTS[action.tool_name]
             if self._state.remaining_budget < cost:
                 return "BUDGET_EXCEEDED", f"{action.tool_name} costs {cost}, exceeding remaining budget."
@@ -343,7 +353,7 @@ class MolForgeGovernanceMixin:
         if role == "assay_planner":
             if action.action_type == "run_assay":
                 info_gain = self._estimate_information_gain(action.tool_name or "")
-                prior_runs = self._assay_runs.get(f"{current_signature}::{action.tool_name}", 0)
+                prior_runs = self._assay_runs.get(self._assay_context_key(action.tool_name or "", current_signature), 0)
                 if (action.tool_name == "run_md_simulation" and self._state.remaining_budget < 4500) or (
                     prior_runs > 0 and info_gain < 0.05
                 ):

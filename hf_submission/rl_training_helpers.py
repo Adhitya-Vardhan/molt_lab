@@ -202,3 +202,152 @@ def build_dynamic_prompts(
     if Dataset is None:
         return records
     return Dataset.from_list(records)
+
+
+def load_completion_diagnostics(path: Path | str) -> list[dict[str, Any]]:
+    """Read JSONL completion diagnostics emitted during GRPO training."""
+
+    log_path = Path(path)
+    if not log_path.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    with log_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return records
+
+
+def generate_training_artifacts(
+    *,
+    log_history: list[dict[str, Any]],
+    completion_log_path: Path | str,
+    output_dir: Path | str,
+) -> dict[str, str]:
+    """Create post-training plots from TRL logs and MolForge completion diagnostics."""
+
+    import matplotlib.pyplot as plt
+    import pandas as pd
+
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    saved: dict[str, str] = {}
+
+    history_df = pd.DataFrame(log_history)
+    diagnostics = load_completion_diagnostics(completion_log_path)
+    diagnostics_df = pd.DataFrame(diagnostics)
+
+    if not history_df.empty:
+        history_df["step"] = pd.to_numeric(history_df.get("step"), errors="coerce")
+
+    reward_col = _first_present_column(history_df, ["reward", "rewards/mean", "train_reward"])
+    if reward_col is not None:
+        reward_df = history_df.dropna(subset=["step", reward_col]).copy()
+        if not reward_df.empty:
+            reward_df["reward_ma"] = reward_df[reward_col].rolling(window=min(20, len(reward_df)), min_periods=1).mean()
+            fig, ax = plt.subplots(figsize=(8, 4.5))
+            ax.plot(reward_df["step"], reward_df[reward_col], alpha=0.35, label="raw reward")
+            ax.plot(reward_df["step"], reward_df["reward_ma"], linewidth=2, label="moving average")
+            ax.set_title("GRPO Reward Curve")
+            ax.set_xlabel("Step")
+            ax.set_ylabel("Reward")
+            ax.legend()
+            fig.tight_layout()
+            path = output / "reward_curve.png"
+            fig.savefig(path, dpi=160)
+            plt.close(fig)
+            saved["reward_curve"] = str(path)
+
+    loss_col = _first_present_column(history_df, ["loss", "train/loss"])
+    if loss_col is not None:
+        loss_df = history_df.dropna(subset=["step", loss_col]).copy()
+        if not loss_df.empty:
+            loss_df["loss_ma"] = loss_df[loss_col].rolling(window=min(20, len(loss_df)), min_periods=1).mean()
+            fig, ax = plt.subplots(figsize=(8, 4.5))
+            ax.plot(loss_df["step"], loss_df[loss_col], alpha=0.35, label="raw loss")
+            ax.plot(loss_df["step"], loss_df["loss_ma"], linewidth=2, label="moving average")
+            ax.set_title("GRPO Loss Curve")
+            ax.set_xlabel("Step")
+            ax.set_ylabel("Loss")
+            ax.legend()
+            fig.tight_layout()
+            path = output / "loss_curve.png"
+            fig.savefig(path, dpi=160)
+            plt.close(fig)
+            saved["loss_curve"] = str(path)
+
+    if not diagnostics_df.empty and "action_type" in diagnostics_df:
+        action_counts = diagnostics_df["action_type"].fillna("unknown").value_counts()
+        fig, ax = plt.subplots(figsize=(8, 4.5))
+        action_counts.plot(kind="bar", ax=ax)
+        ax.set_title("Action Distribution")
+        ax.set_xlabel("Action Type")
+        ax.set_ylabel("Count")
+        fig.tight_layout()
+        path = output / "action_distribution.png"
+        fig.savefig(path, dpi=160)
+        plt.close(fig)
+        saved["action_distribution"] = str(path)
+
+    if not diagnostics_df.empty and "reward" in diagnostics_df:
+        diagnostics_df["index"] = range(1, len(diagnostics_df) + 1)
+        diagnostics_df["reward_ma"] = diagnostics_df["reward"].rolling(
+            window=min(25, len(diagnostics_df)),
+            min_periods=1,
+        ).mean()
+        fig, ax = plt.subplots(figsize=(8, 4.5))
+        ax.plot(diagnostics_df["index"], diagnostics_df["reward"], alpha=0.30, label="completion reward")
+        ax.plot(diagnostics_df["index"], diagnostics_df["reward_ma"], linewidth=2, label="moving average")
+        ax.set_title("Completion Reward Trend")
+        ax.set_xlabel("Completion")
+        ax.set_ylabel("Reward")
+        ax.legend()
+        fig.tight_layout()
+        path = output / "completion_reward_curve.png"
+        fig.savefig(path, dpi=160)
+        plt.close(fig)
+        saved["completion_reward_curve"] = str(path)
+
+    final_scores = _score_series(diagnostics, "final_score")
+    if final_scores:
+        score_df = pd.DataFrame({"index": range(1, len(final_scores) + 1), "final_score": final_scores})
+        score_df["final_score_ma"] = score_df["final_score"].rolling(
+            window=min(25, len(score_df)),
+            min_periods=1,
+        ).mean()
+        fig, ax = plt.subplots(figsize=(8, 4.5))
+        ax.plot(score_df["index"], score_df["final_score"], alpha=0.30, label="completion final_score")
+        ax.plot(score_df["index"], score_df["final_score_ma"], linewidth=2, label="moving average")
+        ax.set_title("Final Score Trend")
+        ax.set_xlabel("Completion")
+        ax.set_ylabel("final_score")
+        ax.legend()
+        fig.tight_layout()
+        path = output / "final_score_curve.png"
+        fig.savefig(path, dpi=160)
+        plt.close(fig)
+        saved["final_score_curve"] = str(path)
+
+    return saved
+
+
+def _first_present_column(frame: Any, candidates: list[str]) -> str | None:
+    for candidate in candidates:
+        if candidate in frame:
+            return candidate
+    return None
+
+
+def _score_series(records: list[dict[str, Any]], score_name: str) -> list[float]:
+    values: list[float] = []
+    for record in records:
+        score_block = record.get("scores", {})
+        value = score_block.get(score_name)
+        if isinstance(value, (int, float)):
+            values.append(float(value))
+    return values

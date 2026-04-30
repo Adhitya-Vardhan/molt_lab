@@ -135,7 +135,7 @@ class MolForgeActionMixin:
         self._state.budget_used += cost
         self._state.oracle_call_count += 1
 
-        key = f"{self._molecule_signature()}::{tool_name}"
+        key = self._assay_context_key(tool_name)
         runs = self._assay_runs.get(key, 0) + 1
         self._assay_runs[key] = runs
 
@@ -196,6 +196,7 @@ class MolForgeActionMixin:
                 "tool_name": tool_name,
                 "runs": runs,
                 "molecule": self._molecule_signature(),
+                "context_key": key,
                 "cost": cost,
                 "results": [reading.model_dump() for reading in readings],
             }

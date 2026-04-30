@@ -49,6 +49,7 @@ Role rules:
 - run_assay uses acting_role "assay_planner" and a valid tool_name.
 - edit, submit, restart, and defer use acting_role "lead_chemist".
 - unused optional fields must be JSON null.
+- Do not repeat the same assay on an unchanged molecule; edit, restart, or wait for a target-context shift before reassaying.
 """.strip()
 
 
