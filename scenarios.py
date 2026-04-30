@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Mapping
 
@@ -45,6 +46,8 @@ class ScenarioConfig:
     required_review_roles: List[str] = field(default_factory=list)
     max_messages_per_turn: int = 4
     baseline_to_beat: float = 0.5
+    scenario_family: str = ""
+    variant_kind: str = "canonical"
 
 
 FRAGMENT_LIBRARY: Dict[str, Dict[str, FragmentSpec]] = {
@@ -332,6 +335,75 @@ def get_scenario(index: int) -> ScenarioConfig:
     return SCENARIOS[index % len(SCENARIOS)]
 
 
+def build_scenario_variant(
+    base: ScenarioConfig,
+    *,
+    rng: random.Random,
+    variant_kind: str,
+    variant_index: int,
+) -> ScenarioConfig:
+    """Create a randomized training or holdout variant from a canonical scenario."""
+
+    if variant_kind not in {"train_randomized", "holdout"}:
+        raise ValueError(f"Unsupported variant_kind: {variant_kind}")
+
+    family = base.scenario_family or base.scenario_id
+    starting_scaffold = _mutate_scaffold(
+        base.starting_scaffold,
+        rng,
+        min_changes=1 if variant_kind == "train_randomized" else 2,
+        max_changes=2 if variant_kind == "train_randomized" else 3,
+    )
+    restart_scaffold = _mutate_scaffold(
+        base.restart_scaffold,
+        rng,
+        min_changes=1,
+        max_changes=1 if variant_kind == "train_randomized" else 2,
+    )
+    objective_weights = _jitter_objective_weights(base.objective_weights, rng)
+    hard_constraints = _jitter_constraints(base.hard_constraints, rng, variant_kind)
+
+    if variant_kind == "train_randomized":
+        budget_scale = rng.uniform(0.85, 1.15)
+        max_steps_delta = rng.choice([-1, 0, 0, 1])
+        baseline_shift = rng.uniform(-0.03, 0.03)
+    else:
+        budget_scale = rng.uniform(0.90, 1.08)
+        max_steps_delta = rng.choice([0, 0, 1])
+        baseline_shift = rng.uniform(-0.02, 0.04)
+
+    target_shift_step = base.target_shift_step
+    if target_shift_step is not None:
+        target_shift_step = max(3, target_shift_step + rng.choice([-1, 0, 1]))
+
+    return ScenarioConfig(
+        scenario_id=f"{family}_{'train' if variant_kind == 'train_randomized' else 'holdout'}_{variant_index:03d}",
+        scenario_family=family,
+        variant_kind=variant_kind,
+        difficulty=base.difficulty,
+        target_name=base.target_name,
+        task_brief=(
+            f"{base.task_brief} This {variant_kind.replace('_', ' ')} variant shifts scaffold priors, "
+            "thresholds, and budget to test strategy generalization."
+        ),
+        oracle_budget=max(2200, int(round(base.oracle_budget * budget_scale))),
+        max_steps=max(4, base.max_steps + max_steps_delta),
+        starting_scaffold=starting_scaffold,
+        restart_scaffold=restart_scaffold,
+        objective_weights=objective_weights,
+        hard_constraints=hard_constraints,
+        target_shift_step=target_shift_step,
+        trap_penalty=base.trap_penalty,
+        enabled_tools=list(base.enabled_tools),
+        enabled_actions=list(base.enabled_actions),
+        coordination_mode=base.coordination_mode,
+        enabled_roles=list(base.enabled_roles),
+        required_review_roles=list(base.required_review_roles),
+        max_messages_per_turn=base.max_messages_per_turn,
+        baseline_to_beat=min(max(base.baseline_to_beat + baseline_shift, 0.45), 0.92),
+    )
+
+
 def format_molecule(molecule: Mapping[str, str]) -> str:
     """Human-readable canonical representation."""
 
@@ -404,11 +476,16 @@ def evaluate_molecule(
         "toxicity": round(toxicity, 4),
         "synth": round(synth, 4),
         "novelty": round(novelty, 4),
+        "chemical_quality": 0.5,
+        "reference_similarity": 0.5,
     }
     try:
-        from molforge_oracles import evaluate_with_rdkit_tdc
+        from .molforge_oracles import evaluate_with_rdkit_tdc
     except Exception:
-        return fallback_properties
+        try:
+            from molforge_oracles import evaluate_with_rdkit_tdc
+        except Exception:
+            return fallback_properties
     return evaluate_with_rdkit_tdc(molecule, fallback_properties)
 
 
@@ -416,19 +493,45 @@ def molecule_to_smiles(molecule: Mapping[str, str]) -> str:
     """Return the RDKit/TDC surrogate SMILES used by the chemistry oracle."""
 
     try:
-        from molforge_oracles import assemble_surrogate_smiles
+        from .molforge_oracles import assemble_surrogate_smiles
     except Exception:
-        return ""
+        try:
+            from molforge_oracles import assemble_surrogate_smiles
+        except Exception:
+            return ""
     return assemble_surrogate_smiles(molecule)
+
+
+def molecule_diagnostics(molecule: Mapping[str, str]) -> Dict[str, object]:
+    """Return structure-derived chemistry diagnostics for transparency and gating."""
+
+    try:
+        from .molforge_oracles import chemistry_diagnostics
+    except Exception:
+        try:
+            from molforge_oracles import chemistry_diagnostics
+        except Exception:
+            return {
+                "available": False,
+                "chemical_quality": 0.5,
+                "passes_filters": True,
+                "reference_similarity": 0.5,
+                "alerts": [],
+                "failed_filters": [],
+            }
+    return chemistry_diagnostics(molecule)
 
 
 def oracle_backend_status() -> Dict[str, bool]:
     """Return whether RDKit and TDC are active for scoring."""
 
     try:
-        from molforge_oracles import oracle_backend_status as backend_status
+        from .molforge_oracles import oracle_backend_status as backend_status
     except Exception:
-        return {"rdkit": False, "tdc": False}
+        try:
+            from molforge_oracles import oracle_backend_status as backend_status
+        except Exception:
+            return {"rdkit": False, "tdc": False}
     return backend_status()
 
 
@@ -502,3 +605,49 @@ def enumerate_candidate_edits(molecule: Mapping[str, str]) -> Iterable[tuple[str
         for fragment in fragment_choices(slot):
             if molecule[slot] != fragment:
                 yield slot, fragment
+
+
+def _mutate_scaffold(
+    scaffold: Mapping[str, str],
+    rng: random.Random,
+    *,
+    min_changes: int,
+    max_changes: int,
+) -> Dict[str, str]:
+    mutated = dict(scaffold)
+    change_count = rng.randint(min_changes, max_changes)
+    slots = rng.sample(SLOT_ORDER, k=min(change_count, len(SLOT_ORDER)))
+    for slot in slots:
+        choices = [fragment for fragment in FRAGMENT_LIBRARY[slot] if fragment != mutated[slot]]
+        mutated[slot] = rng.choice(choices)
+    return mutated
+
+
+def _jitter_objective_weights(
+    objective_weights: Mapping[str, float],
+    rng: random.Random,
+) -> Dict[str, float]:
+    raw = {
+        key: max(0.05, value + rng.uniform(-0.06, 0.06))
+        for key, value in objective_weights.items()
+    }
+    total = sum(raw.values())
+    return {key: round(value / total, 4) for key, value in raw.items()}
+
+
+def _jitter_constraints(
+    constraints: Mapping[str, float],
+    rng: random.Random,
+    variant_kind: str,
+) -> Dict[str, float]:
+    potency_shift = rng.uniform(-0.03, 0.03 if variant_kind == "train_randomized" else 0.02)
+    toxicity_shift = rng.uniform(-0.03, 0.03)
+    synth_shift = rng.uniform(-0.03, 0.02)
+    jittered = dict(constraints)
+    if "potency_min" in jittered:
+        jittered["potency_min"] = round(min(max(jittered["potency_min"] + potency_shift, 0.68), 0.90), 4)
+    if "toxicity_max" in jittered:
+        jittered["toxicity_max"] = round(min(max(jittered["toxicity_max"] + toxicity_shift, 0.22), 0.52), 4)
+    if "synth_min" in jittered:
+        jittered["synth_min"] = round(min(max(jittered["synth_min"] + synth_shift, 0.54), 0.76), 4)
+    return jittered

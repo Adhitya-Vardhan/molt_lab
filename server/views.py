@@ -41,6 +41,7 @@ class MolForgeViewMixin:
         current_assays = [
             reading for reading in self._known_assays if reading.molecule_signature == current_signature
         ]
+        chemistry = self._chemical_diagnostics()
         visible_metrics = {
             "budget_fraction_remaining": round(
                 self._state.remaining_budget / max(self._scenario.oracle_budget, 1), 4
@@ -51,14 +52,19 @@ class MolForgeViewMixin:
             estimate = self._current_property_estimate(property_name, current_signature)
             if estimate is not None:
                 visible_metrics[property_name] = estimate
+        if chemistry.get("available"):
+            visible_metrics["chemical_quality"] = float(chemistry.get("chemical_quality", 0.5))
+            visible_metrics["reference_similarity"] = float(chemistry.get("reference_similarity", 0.5))
 
         constraint_status = self._build_visible_constraints(current_signature)
         metadata: Dict[str, Any] = {
             "task_index": self._reset_index % len(SCENARIOS),
+            "scenario_variant": deepcopy(self._scenario_context),
             "oracle_budget_costs": deepcopy(DEFAULT_TOOL_COSTS),
             "history_length": len(self._history),
             "trace_tail": [entry["summary"] for entry in self._history[-3:]],
             "current_smiles": molecule_to_smiles(self._molecule),
+            "chemical_diagnostics": chemistry,
             "oracle_backend": oracle_backend_status(),
             "candidate_edits": [
                 {"slot": slot, "fragment": fragment}
@@ -151,6 +157,7 @@ class MolForgeViewMixin:
             for reading in self._known_assays
             if reading.molecule_signature == molecule_signature
         ]
+        chemistry = self._chemical_diagnostics()
         evidence_gaps = [
             prop
             for prop in ["potency", "toxicity", "synth"]
@@ -171,6 +178,7 @@ class MolForgeViewMixin:
                     "molecule_slots": deepcopy(self._molecule),
                     "edit_history": edit_history,
                     "visible_assays": current_assays,
+                    "chemical_diagnostics": chemistry,
                     "candidate_edits": [
                         {"slot": slot, "fragment": fragment}
                         for slot, fragment in list(enumerate_candidate_edits(self._molecule))[:8]
@@ -190,6 +198,7 @@ class MolForgeViewMixin:
                     ],
                     "hard_threshold": self._scenario.hard_constraints.get("toxicity_max"),
                     "safety_alerts": self._safety_alerts(),
+                    "chemical_diagnostics": chemistry,
                     "risk_history": [
                         message.model_dump()
                         for message in self._message_log
@@ -225,6 +234,7 @@ class MolForgeViewMixin:
                         reading for reading in current_assays if reading["property_name"] == "synth"
                     ],
                     "route_warnings": self._route_warnings(),
+                    "chemical_diagnostics": chemistry,
                     "feasibility_flags": {
                         "heavy_hinge": self._molecule["hinge"] == "quinazoline",
                         "reactive_warhead": self._molecule["warhead"] == "vinyl_sulfonamide",
@@ -243,6 +253,7 @@ class MolForgeViewMixin:
         submitted = self._state.submitted
         coordination_score = self._coordination_score()
         evidence_score = self._evidence_score()
+        chemical_quality_score = self._chemical_quality_score()
         budget_score = self._open_unit_interval(
             self._state.remaining_budget / max(self._scenario.oracle_budget, 1),
         )
@@ -251,6 +262,7 @@ class MolForgeViewMixin:
             constraint_margin_score=constraint_margin_score,
             constraint_fraction=constraint_fraction,
             evidence_score=evidence_score,
+            chemical_quality_score=chemical_quality_score,
             coordination_score=coordination_score,
             budget_score=budget_score,
         )
@@ -277,8 +289,10 @@ class MolForgeViewMixin:
             "submitted_score": 1.0 if submitted else 0.0,
             "submission_score": submission_score,
             "progress_score": progress_score,
+            "chemical_quality_score": self._open_unit_interval(chemical_quality_score),
             "coordination_score": self._open_unit_interval(coordination_score),
             "evidence_score": self._open_unit_interval(evidence_score),
+            "reference_similarity_score": self._open_unit_interval(properties.get("reference_similarity", 0.5)),
         }
 
     def _grade_progress(
@@ -288,6 +302,7 @@ class MolForgeViewMixin:
         constraint_margin_score: float,
         constraint_fraction: float,
         evidence_score: float,
+        chemical_quality_score: float,
         coordination_score: float,
         budget_score: float,
     ) -> float:
@@ -295,10 +310,11 @@ class MolForgeViewMixin:
 
         progress = (
             0.45 * candidate_score
-            + 0.35 * constraint_margin_score
-            + 0.10 * evidence_score
-            + 0.05 * coordination_score
-            + 0.05 * budget_score
+            + 0.28 * constraint_margin_score
+            + 0.12 * evidence_score
+            + 0.08 * chemical_quality_score
+            + 0.04 * coordination_score
+            + 0.03 * budget_score
         )
         repeated_assays = sum(max(0, runs - 1) for runs in self._assay_runs.values())
         policy_vetoes = sum(
@@ -354,17 +370,23 @@ class MolForgeViewMixin:
         total_correct = sum(metrics["correct_messages"] for metrics in self._role_metrics.values())
         return self._open_unit_interval(min(total_correct, expected_messages) / expected_messages)
 
+    def _chemical_quality_score(self) -> float:
+        return self._open_unit_interval(self._true_properties().get("chemical_quality", 0.5))
+
     def _grade_submission(self, properties: Mapping[str, float]) -> float:
         base = compute_objective_score(properties, self._scenario)
+        chemistry = self._chemical_diagnostics()
+        chemical_quality = self._chemical_quality_score()
         constraint_margins = evaluate_constraint_margins(properties, self._scenario)
         constraint_margin_score = sum(constraint_margins.values()) / max(len(constraint_margins), 1)
         constraints = evaluate_constraints(properties, self._scenario)
         constraint_fraction = sum(1.0 for passed, _ in constraints.values() if passed) / max(len(constraints), 1)
         submission_score = (
-            0.60 * base
+            0.62 * base
             + 0.20 * constraint_margin_score
-            + 0.10 * self._coordination_score()
             + 0.10 * self._evidence_score()
+            + 0.05 * chemical_quality
+            + 0.03 * self._coordination_score()
         )
         evidence_score = self._evidence_score()
         if evidence_score >= 0.99 and constraint_fraction >= 1.0 and base >= self._scenario.baseline_to_beat:
@@ -376,6 +398,8 @@ class MolForgeViewMixin:
             submission_score = min(submission_score, 0.20 + 0.50 * constraint_margin_score)
         if base < self._scenario.baseline_to_beat:
             submission_score = min(submission_score, 0.45)
+        if chemistry.get("available") and not chemistry.get("passes_filters", True):
+            submission_score = min(submission_score, 0.15 + 0.55 * chemical_quality)
         return self._open_unit_interval(submission_score)
 
     def _evidence_score(self) -> float:
@@ -405,11 +429,13 @@ class MolForgeViewMixin:
         constraints = evaluate_constraints(properties, self._scenario)
         lines = [
             f"Scenario: {self._scenario.scenario_id} ({self._scenario.difficulty})",
+            f"Scenario family: {self._scenario.scenario_family or self._scenario.scenario_id} [{self._scenario.variant_kind}]",
             f"Final molecule: {self._molecule_signature()}",
             f"Potency: {properties['potency']:.3f}",
             f"Toxicity: {properties['toxicity']:.3f}",
             f"Synthesizability: {properties['synth']:.3f}",
             f"Novelty: {properties['novelty']:.3f}",
+            f"Chemical quality: {grader_scores['chemical_quality_score']:.3f}",
             f"Final score: {grader_scores['final_score']:.3f}",
             f"Candidate scientific score: {grader_scores['candidate_score']:.3f}",
             f"Constraint margin score: {grader_scores['constraint_margin_score']:.3f}",
@@ -417,6 +443,7 @@ class MolForgeViewMixin:
             f"Progress score: {grader_scores['progress_score']:.3f}",
             f"Coordination score: {grader_scores['coordination_score']:.3f}",
             f"Evidence score: {grader_scores['evidence_score']:.3f}",
+            f"Reference ligand similarity: {grader_scores['reference_similarity_score']:.3f}",
             "Constraints:",
         ]
         for name, (passed, threshold) in constraints.items():
@@ -424,6 +451,19 @@ class MolForgeViewMixin:
             lines.append(
                 f"- {name}: {'pass' if passed else 'fail'} (actual={properties[metric_name]:.3f}, threshold={threshold:.3f})"
             )
+        chemistry = self._chemical_diagnostics()
+        if chemistry.get("available"):
+            descriptor_bits = ", ".join(
+                f"{name}={value}"
+                for name, value in chemistry.get("descriptors", {}).items()
+                if name in {"mol_wt", "logp", "tpsa", "rotatable_bonds"}
+            )
+            lines.append(f"Chemistry diagnostics: {descriptor_bits}")
+            alerts = chemistry.get("alerts", [])
+            lines.append(f"Chemistry alerts: {', '.join(alerts) if alerts else 'none'}")
+            failed_filters = chemistry.get("failed_filters", [])
+            if failed_filters:
+                lines.append(f"Chemistry filter failures: {', '.join(failed_filters)}")
         lines.append(
             f"Messages sent: {self._state.message_count}, objections raised: {self._state.objection_count}, oracle calls: {self._state.oracle_call_count}"
         )

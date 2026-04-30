@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from copy import deepcopy
+from dataclasses import replace
 from typing import Any, Dict, List, Mapping, Optional
 
 try:
@@ -19,7 +20,9 @@ try:
         SLOT_ORDER,
         SCENARIOS,
         ScenarioConfig,
+        build_scenario_variant,
         compute_objective_score,
+        molecule_diagnostics,
         enumerate_candidate_edits,
         evaluate_constraint_margins,
         evaluate_constraints,
@@ -43,7 +46,9 @@ except ImportError:
         SLOT_ORDER,
         SCENARIOS,
         ScenarioConfig,
+        build_scenario_variant,
         compute_objective_score,
+        molecule_diagnostics,
         enumerate_candidate_edits,
         evaluate_constraint_margins,
         evaluate_constraints,
@@ -154,6 +159,9 @@ class MolForgeSharedMixin:
     def _true_properties(self) -> Dict[str, float]:
         return self._evaluate_for_molecule(self._molecule, self._trap_penalty_active)
 
+    def _chemical_diagnostics(self, molecule: Optional[Mapping[str, str]] = None) -> Dict[str, Any]:
+        return molecule_diagnostics(molecule or self._molecule)
+
     def _evaluate_for_molecule(
         self,
         molecule: Mapping[str, str],
@@ -161,9 +169,7 @@ class MolForgeSharedMixin:
     ) -> Dict[str, float]:
         return evaluate_molecule(
             molecule,
-            self._scenario.__class__(
-                **{**self._scenario.__dict__, "trap_penalty": trap_penalty_active}
-            ),
+            replace(self._scenario, trap_penalty=trap_penalty_active),
             target_shift_active=self._target_shift_active(),
         )
 

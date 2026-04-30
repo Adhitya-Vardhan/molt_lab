@@ -207,7 +207,9 @@ class MolForgeActionMixin:
 
     def _submit(self, reward_components: List[RewardComponent]) -> tuple[float, bool]:
         properties = self._true_properties()
+        chemistry = self._chemical_diagnostics()
         final_score = compute_objective_score(properties, self._scenario)
+        submission_score = self._grade_submission(properties)
         constraint_results = evaluate_constraints(properties, self._scenario)
         constraint_margins = evaluate_constraint_margins(properties, self._scenario)
         margin_score = sum(constraint_margins.values()) / max(len(constraint_margins), 1)
@@ -231,9 +233,16 @@ class MolForgeActionMixin:
                 and any(result["property_name"] == "potency" for result in entry["results"])
                 for entry in self._oracle_log
             )
-        valid_submission = hard_constraints_met and beats_baseline and evidence_met and post_shift_evidence_met
+        chemistry_gate_met = chemistry.get("passes_filters", True)
+        valid_submission = (
+            hard_constraints_met
+            and beats_baseline
+            and evidence_met
+            and post_shift_evidence_met
+            and chemistry_gate_met
+        )
 
-        reward = final_score * 2.0 if valid_submission else final_score * 0.25
+        reward = submission_score * 2.2 if valid_submission else submission_score * 0.20
         if valid_submission:
             reward += 3.5
         elif not hard_constraints_met:
@@ -244,6 +253,8 @@ class MolForgeActionMixin:
             reward -= 1.2
         if not post_shift_evidence_met:
             reward -= 0.8
+        if not chemistry_gate_met:
+            reward -= 0.9
 
         if valid_submission:
             reward += max(0.0, budget_efficiency) * 0.7
@@ -264,9 +275,9 @@ class MolForgeActionMixin:
             [
                 RewardComponent(
                     name="submission_quality",
-                    value=round((final_score * 2.0 if valid_submission else final_score * 0.25), 4),
+                    value=round((submission_score * 2.2 if valid_submission else submission_score * 0.20), 4),
                     explanation=(
-                        "Full scientific quality reward because the submission met constraints, baseline, and evidence gates."
+                        "Full terminal reward because the submission met scientific, evidence, and chemistry gates."
                         if valid_submission
                         else "Only a small quality trace is awarded because the submit action missed a gate."
                     ),
@@ -319,6 +330,15 @@ class MolForgeActionMixin:
                     ),
                 ),
                 RewardComponent(
+                    name="chemical_validity",
+                    value=0.0 if chemistry_gate_met else -0.9,
+                    explanation=(
+                        "Submission passed the medicinal chemistry filter package."
+                        if chemistry_gate_met
+                        else "Submission failed medicinal chemistry filters despite good surrogate scores."
+                    ),
+                ),
+                RewardComponent(
                     name="budget_efficiency",
                     value=round(max(0.0, budget_efficiency) * 0.7, 4) if valid_submission else 0.0,
                     explanation=(
@@ -368,7 +388,7 @@ class MolForgeActionMixin:
         signature = self._molecule_signature()
 
         if tool_name == "evaluate_properties":
-            property_names = ["potency", "novelty"]
+            property_names = ["potency", "novelty", "chemical_quality", "reference_similarity"]
         elif tool_name == "dock_target":
             property_names = ["potency"]
         elif tool_name == "assay_toxicity":

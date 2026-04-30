@@ -11,6 +11,12 @@ MOLFORGE_REWARD_MODE=curriculum
 MOLFORGE_TRAINING_RANDOMIZATION=1
 ```
 
+For explicit generalization checks during training, you can also run:
+
+```bash
+MOLFORGE_SCENARIO_MODE=holdout
+```
+
 Track:
 
 - mean episode reward;
@@ -44,6 +50,7 @@ Report:
 - `candidate_score`;
 - `progress_score`;
 - `constraint_margin_score`;
+- `chemical_quality_score`;
 - `evidence_score`;
 - `coordination_score`;
 - `budget_score`;
@@ -60,6 +67,11 @@ credit to non-submitted episodes. `progress_score` is useful for debugging but
 is not a substitute for `final_score` or `submission_score`: it is capped when
 constraints fail, when the hard trap scenario is not restarted, or when the
 model loops through repeated assays and vetoes.
+
+`submission_score` is now intentionally dominated by molecule quality,
+constraint margins, evidence coverage, and chemistry quality. Coordination is
+still measured, but contributes only a small residual term so the benchmark is
+harder to game with low-content message formatting.
 
 ## Budget And Step Interpretation
 

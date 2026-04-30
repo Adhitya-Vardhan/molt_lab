@@ -41,6 +41,12 @@ Use randomized training episodes when collecting data or training a policy:
 MOLFORGE_TRAINING_RANDOMIZATION=1 MOLFORGE_RANDOM_SEED=42 python inference.py
 ```
 
+For a stricter unseen-variant evaluation split, use:
+
+```bash
+MOLFORGE_SCENARIO_MODE=holdout MOLFORGE_RANDOM_SEED=42 python inference.py
+```
+
 Keep randomization off for judge-facing baseline runs so scores remain reproducible.
 
 ## 2. Recommended Training Plan
@@ -75,6 +81,7 @@ Avoid these example types:
 - Any answer that mentions exact hidden objective deltas
 - Hidden chain-of-thought or long private reasoning transcripts
 - Repetitive message spam just to collect coordination reward
+- Thin reviewer messages with no real rationale or payload
 - Premature submit actions without potency/safety evidence
 - Examples where missing specialist messages are silently repaired by the runner
 

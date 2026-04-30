@@ -109,13 +109,17 @@ class MolForgeGovernanceMixin:
 
         actor_message = sender_map.get(action.acting_role)
         if action.action_type != "defer":
-            if actor_message and actor_message.message_type == "proposal":
+            if (
+                actor_message
+                and actor_message.message_type == "proposal"
+                and self._is_substantive_message(actor_message)
+            ):
                 self._record_message(actor_message)
                 reward_components.append(
                     RewardComponent(
                         name="proposal_logged",
-                        value=0.05,
-                        explanation=f"{action.acting_role} logged a structured proposal before execution.",
+                        value=0.02,
+                        explanation=f"{action.acting_role} logged a substantive proposal before execution.",
                     )
                 )
                 self._role_metrics[action.acting_role]["correct_messages"] += 1
@@ -123,8 +127,8 @@ class MolForgeGovernanceMixin:
                 reward_components.append(
                     RewardComponent(
                         name="missing_proposal",
-                        value=-0.06,
-                        explanation="The acting specialist did not provide an explicit proposal message.",
+                        value=-0.03,
+                        explanation="The acting specialist did not provide a substantive proposal message.",
                     )
                 )
 
@@ -135,7 +139,7 @@ class MolForgeGovernanceMixin:
                 reward_components.append(
                     RewardComponent(
                         name=f"missing_review_{role}",
-                        value=-0.08,
+                        value=-0.04,
                         explanation=f"{role} did not provide the required review for this turn.",
                     )
                 )
@@ -146,11 +150,23 @@ class MolForgeGovernanceMixin:
 
             if role != action.acting_role:
                 self._record_message(actual)
-            if self._matches_feedback(actual.message_type, expected["type"]):
+            if not self._is_substantive_message(actual):
+                reward_components.append(
+                    RewardComponent(
+                        name=f"thin_review_{role}",
+                        value=-0.03,
+                        explanation=f"{role} used the right channel but did not provide enough reasoning detail.",
+                    )
+                )
+                self._role_metrics[role]["incorrect_messages"] += 1
+                if expected["hard_veto"]:
+                    policy_veto = True
+                    vetoes.append(role)
+            elif self._matches_feedback(actual.message_type, expected["type"]):
                 reward_components.append(
                     RewardComponent(
                         name=f"coordination_{role}",
-                        value=0.12,
+                        value=0.04,
                         explanation=expected["reason"],
                     )
                 )
@@ -163,7 +179,7 @@ class MolForgeGovernanceMixin:
                 reward_components.append(
                     RewardComponent(
                         name=f"unnecessary_message_{role}",
-                        value=-0.02,
+                        value=-0.01,
                         explanation=f"{role} contributed a message even though no strong intervention was needed.",
                     )
                 )
@@ -172,7 +188,7 @@ class MolForgeGovernanceMixin:
                 reward_components.append(
                     RewardComponent(
                         name=f"misaligned_review_{role}",
-                        value=-0.1,
+                        value=-0.06,
                         explanation=(
                             f"{role} sent {actual.message_type}, but the hidden environment evaluation "
                             f"expected {expected['type']}."
@@ -198,11 +214,14 @@ class MolForgeGovernanceMixin:
             reward_components.append(
                 RewardComponent(
                     name=f"optional_review_{role}",
-                    value=0.02,
+                    value=0.01 if self._is_substantive_message(sender_map[role]) else -0.01,
                     explanation=f"{role} added optional context for the current decision.",
                 )
             )
-            self._role_metrics[role]["correct_messages"] += 1
+            if self._is_substantive_message(sender_map[role]):
+                self._role_metrics[role]["correct_messages"] += 1
+            else:
+                self._role_metrics[role]["incorrect_messages"] += 1
 
         if policy_veto:
             reward_components.append(
@@ -232,6 +251,12 @@ class MolForgeGovernanceMixin:
             reward_components,
             policy_veto,
         )
+
+    @staticmethod
+    def _is_substantive_message(message: Any) -> bool:
+        summary = (message.summary or "").strip()
+        payload = message.payload or {}
+        return len(summary) >= 18 and (len(summary.split()) >= 4 or bool(payload))
 
     def _expected_feedback(
         self,

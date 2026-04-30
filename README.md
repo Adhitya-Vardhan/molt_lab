@@ -128,6 +128,11 @@ As shown in the reward curve and logs, the model successfully learns to navigate
 
 The hard scenario is designed to punish blind local optimization. A model that keeps improving the wrong scaffold can look productive early and still fail later. A stronger policy learns when to restart, re-assay, and rebuild evidence after the target shift.
 
+For training and generalization testing, MolForge can now generate richer scenario variants on reset:
+
+- `MOLFORGE_TRAINING_RANDOMIZATION=1` enables randomized training variants with shifted starting scaffolds, restart scaffolds, objective weights, thresholds, and budgets.
+- `MOLFORGE_SCENARIO_MODE=holdout` enables deterministic holdout variants so policies can be evaluated on unseen scenario perturbations without changing the canonical benchmark tasks.
+
 ## Molecular Search Space
 
 The molecule is represented as four editable slots:
@@ -205,9 +210,9 @@ The reward function mixes coarse shaping with sparse terminal bonuses to promote
 
 - **Coarse Feedback**: Edit feedback avoids exposing exact hidden deltas, forcing the model to rely on assays for decision-making.
 - **Information Gain**: Rewards for running useful assays that provide new, evidence-based signal.
-- **Coordination & Governance**: Rewards for correct specialist reviews, proposal discipline, and multi-agent consensus.
+- **Coordination & Governance**: Rewards for correct specialist reviews, proposal discipline, and multi-agent consensus, but the coordination weight is intentionally kept small so message formatting cannot dominate scientific quality.
 - **Scientific Penalties**: Deductions for invalid actions, repeated states, wasteful assay repetition, and submitting without sufficient potency/safety support.
-- **Terminal Scoring**: A large bonus for submitting a molecule that beats the baseline while satisfying all hard constraints.
+- **Terminal Scoring**: A large bonus for submitting a molecule that beats the baseline while satisfying all hard constraints and medicinal chemistry filters.
 
 ### Strategic Training Modes
 
@@ -216,7 +221,14 @@ MolForge uses two distinct reward settings to balance training and evaluation:
 1. **Curriculum Mode (Training)**: Adds bounded warmup rewards for evidence collection and "near-miss" episodes. It also adds a small **missed-nomination penalty** when a strong evidence package is ready but the agent lets the deadline pass without submitting. This acts as "breadcrumbs" for RL, helping smaller models navigate sparse reward landscapes.
 2. **Assay-Gated Mode (Evaluation)**: The strict, official hackathon mode. If the agent does not formally `submit` the candidate before the budget is exhausted, the final score is exactly `0.0`. No partial credit is given for just gathering evidence.
 
-`final_score` remains the single headline scalar for RL/evaluation. While `candidate_score` and `progress_score` are used for diagnostic observability, the environment is designed so that evidence collection alone cannot look like success; it must lead to a valid submission.
+`final_score` remains the single headline scalar for RL/evaluation. While `candidate_score` and `progress_score` are used for diagnostic observability, the environment is designed so that evidence collection alone cannot look like success; it must lead to a valid submission. The final grader now emphasizes molecule quality, constraint margins, evidence coverage, and chemistry quality, with coordination contributing only a small residual term.
+
+MolForge also exposes structure-derived chemistry diagnostics in observations and report cards:
+
+- descriptor windows such as molecular weight, LogP, TPSA, and rotatable bonds;
+- medicinal-chemistry alert flags, including reactive warheads and optional RDKit catalog alerts;
+- a weak reference-ligand similarity anchor that nudges potency scoring toward known-like KRAS binders;
+- a `chemical_quality` score that can block terminal submissions even when surrogate potency is strong.
 
 
 

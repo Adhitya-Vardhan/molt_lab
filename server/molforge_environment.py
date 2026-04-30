@@ -16,6 +16,7 @@ from .shared import (
     FRAGMENT_LIBRARY,
     SCENARIOS,
     SLOT_ORDER,
+    build_scenario_variant,
     compute_objective_score,
     get_scenario,
 )
@@ -46,11 +47,17 @@ class MolForgeEnvironment(
             "true",
             "yes",
         }
+        self._holdout_enabled = os.getenv("MOLFORGE_HOLDOUT_MODE", "").lower() in {"1", "true", "yes"}
+        self._scenario_mode = os.getenv("MOLFORGE_SCENARIO_MODE", "").lower() or (
+            "holdout" if self._holdout_enabled else "train_randomized" if self._training_randomization_enabled else "canonical"
+        )
         self._reward_mode = os.getenv("MOLFORGE_REWARD_MODE", "assay_gated").lower()
-        self._rng = random.Random(os.getenv("MOLFORGE_RANDOM_SEED", "molforge"))
+        self._random_seed = os.getenv("MOLFORGE_RANDOM_SEED", "molforge")
+        self._rng = random.Random(self._random_seed)
         self._reset_index = -1
         self._state = MolForgeState(episode_id=str(uuid4()), step_count=0)
         self._scenario = SCENARIOS[0]
+        self._scenario_context: Dict[str, Any] = {}
         self._molecule: Dict[str, str] = {}
         self._assay_runs: Dict[str, int] = {}
         self._known_assays: List = []
@@ -138,27 +145,31 @@ class MolForgeEnvironment(
         """Select a deterministic judge scenario or a randomized training variant."""
 
         scenario = get_scenario(self._reset_index)
-        if not self._training_randomization_enabled:
-            return scenario
-
-        scenario = self._rng.choice(SCENARIOS)
-        budget_scale = self._rng.uniform(0.85, 1.15)
-        max_steps_delta = self._rng.choice([-1, 0, 0, 1])
-        starting_scaffold = dict(scenario.starting_scaffold)
-        if self._rng.random() < 0.35:
-            slot = self._rng.choice(SLOT_ORDER)
-            choices = [
-                fragment
-                for fragment in FRAGMENT_LIBRARY[slot]
-                if fragment != starting_scaffold[slot]
-            ]
-            starting_scaffold[slot] = self._rng.choice(choices)
-        return replace(
-            scenario,
-            oracle_budget=max(1, int(round(scenario.oracle_budget * budget_scale))),
-            max_steps=max(4, scenario.max_steps + max_steps_delta),
-            starting_scaffold=starting_scaffold,
-        )
+        if self._scenario_mode == "holdout":
+            variant_rng = random.Random(f"{self._random_seed}:holdout:{self._reset_index}")
+            scenario = build_scenario_variant(
+                scenario,
+                rng=variant_rng,
+                variant_kind="holdout",
+                variant_index=self._reset_index,
+            )
+        elif self._scenario_mode == "train_randomized":
+            scenario = build_scenario_variant(
+                self._rng.choice(SCENARIOS),
+                rng=self._rng,
+                variant_kind="train_randomized",
+                variant_index=self._reset_index,
+            )
+        self._scenario_context = {
+            "mode": self._scenario_mode,
+            "random_seed": self._random_seed,
+            "scenario_family": scenario.scenario_family or scenario.scenario_id,
+            "scenario_id": scenario.scenario_id,
+            "variant_kind": scenario.variant_kind,
+            "is_holdout": scenario.variant_kind == "holdout",
+            "is_randomized": scenario.variant_kind != "canonical",
+        }
+        return scenario
 
     def step(self, action: MolForgeAction) -> MolForgeObservation:  # type: ignore[override]
         """Execute one coordinated environment action."""
@@ -300,11 +311,12 @@ class MolForgeEnvironment(
 
         grader_scores = self._grade_all()
         progress = (
-            0.25 * grader_scores["candidate_score"]
-            + 0.25 * grader_scores["constraint_margin_score"]
-            + 0.25 * grader_scores["evidence_score"]
-            + 0.15 * grader_scores["coordination_score"]
-            + 0.10 * grader_scores["budget_score"]
+            0.28 * grader_scores["candidate_score"]
+            + 0.24 * grader_scores["constraint_margin_score"]
+            + 0.24 * grader_scores["evidence_score"]
+            + 0.16 * grader_scores["chemical_quality_score"]
+            + 0.05 * grader_scores["coordination_score"]
+            + 0.03 * grader_scores["budget_score"]
         )
         progress = min(0.75, max(0.0, progress))
         reward_components.append(

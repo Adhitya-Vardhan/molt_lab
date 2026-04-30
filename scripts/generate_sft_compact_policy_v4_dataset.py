@@ -362,7 +362,6 @@ def compact_action_payload(observation: MolForgeObservation) -> dict[str, Any]:
         ],
         "tool_costs": assay_view.get("tool_costs", {}),
         "evidence_gaps": assay_view.get("evidence_gaps", []),
-        "estimated_information_value": assay_view.get("estimated_information_value", {}),
     }
 
 
